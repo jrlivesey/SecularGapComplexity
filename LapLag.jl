@@ -30,7 +30,8 @@ end
 # Populate with Planet structs
 mutable struct SolarSystem
     # Bodies in the system; maximum multiplicity 9
-    star_mass::Float64
+    multiplicity::Integer
+    star_mass::Number
     p1::Planet
     p2::Planet
     p3::Planet
@@ -43,9 +44,8 @@ mutable struct SolarSystem
 end
 
 
-function makeplanet(star_mass::Float64, m::Float64, a::Float64, e::Float64,
-                    i::Float64, omega::Float64, varpi::Float64)
-    multiplicity += 1
+function makeplanet(star_mass::Number, m::Number, a::Number, e::Number,
+                    i::Number, omega::Number, varpi::Number)
     m *= ua.Mjup
     a *= ua.AU
     i *= pi/180
@@ -56,12 +56,16 @@ function makeplanet(star_mass::Float64, m::Float64, a::Float64, e::Float64,
 end
 
 
-function makesystem(star_mass::Float64, planet_list::Array{Planet})
-    solsys = SolarSystem(0.0, nothing, nothing, nothing, nothing, nothing,
-                              nothing, nothing, nothing, nothing, nothing)
+function makesystem(star_mass::Number, planet_list::Array{Planet})
+    null_planet = Planet(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    solsys = SolarSystem(0, 0.0, null_planet, null_planet, null_planet,
+                                 null_planet, null_planet, null_planet,
+                                 null_planet, null_planet, null_planet)
+    multiplicity = size(planet_list)[1]
+    setproperty!(solsys, :multiplicity, multiplicity)
     setproperty!(solsys, :star_mass, star_mass)
     for i = 1 : multiplicity
-        setproperty!(solsys, fieldnames(SolarSystem)[i+1], planet_list[i])
+        setproperty!(solsys, fieldnames(SolarSystem)[i+2], planet_list[i])
     end
     return solsys
 end
@@ -76,10 +80,10 @@ function swapcols(X::AbstractMatrix, i::Integer, j::Integer)
 end
 
 
-function laplace_coefficient(j::Integer, s::Integer, alpha::Float64)
+function laplace_coefficient(j::Integer, s::Float64, alpha::Float64)
     steps = 1_000_000
     psi = collect(range(0.0, pi, length=steps))
-    db = cos.(j .* psi) .* (1.0 + alpha^2 .- 2.0 * alpha .* cos.(phi)) .^ (-s)
+    db = cos.(j .* psi) .* (1.0 + alpha^2 .- 2.0 * alpha .* cos.(psi)) .^ (-s)
     b = cumul_integrate(psi, db)
     b *= 2.0/pi
     return b[steps]
@@ -91,31 +95,55 @@ end
 ###################################################################################################
 
 
-function ajj(star_mass, jbody, kbody)
-    alpha = jbody.a / kbody.a
-    if alpha < 1.0
-        component = 0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(1, 3/2, alpha)
-    else
-        alpha = kbody.a / jbody.a
-        component = 0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha * laplace_coefficient(1, 3/2, alpha)
+function ajj(star_mass::Number, planet_list::Array{Planet}, j::Integer)
+    multiplicity = size(planet_list)[1]
+    terms = zeros(multiplicity) .* ((ua.GMsun)^(1/2) / ua.AU^(3/2))
+    jbody = planet_list[j]
+    for k = 1 : multiplicity
+        if k != j
+            term = nothing
+            kbody = planet_list[k]
+            alpha = jbody.a / kbody.a
+            if alpha < 1.0
+                term = 0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(1, 3/2, alpha)
+            else
+                alpha = kbody.a / jbody.a
+                term = 0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha * laplace_coefficient(1, 3/2, alpha)
+            end
+            terms[k] = term
+        end
     end
+    component = sum(terms)
     return component * 180.0/pi |> u"perYear"
 end
 
 
-function bjj(star_mass, jbody, kbody)
-    alpha = jbody.a / kbody.a
-    if alpha < 1.0
-        component = -0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(1, 3/2, alpha)
-    else
-        alpha = kbody.a / jbody.a
-        component = -0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha * laplace_coefficient(1, 3/2, alpha)
+function bjj(star_mass::Number, planet_list::Array{Planet}, j::Integer)
+    multiplicity = size(planet_list)[1]
+    terms = zeros(multiplicity) * ((ua.GMsun)^(1/2) / ua.AU^(3/2))
+    jbody = planet_list[j]
+    for k = 1 : multiplicity
+        if k != j
+            term = nothing
+            kbody = planet_list[k]
+            alpha = jbody.a / kbody.a
+            if alpha < 1.0
+                term = -0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(1, 3/2, alpha)
+            else
+                alpha = kbody.a / jbody.a
+                term = -0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha * laplace_coefficient(1, 3/2, alpha)
+            end
+            terms[k] = term
+        end
     end
+    component = sum(terms)
     return component * 180.0/pi |> u"perYear"
 end
 
 
-function ajk(star_mass, jbody, kbody)
+function ajk(star_mass::Number, planet_list::Array{Planet}, j::Integer, k::Integer)
+    jbody = planet_list[j]
+    kbody = planet_list[k]
     alpha = jbody.a / kbody.a
     if alpha < 1.0
         component = -0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(2, 3/2, alpha)
@@ -127,7 +155,9 @@ function ajk(star_mass, jbody, kbody)
 end
 
 
-function bjk(star_mass, jbody, kbody)
+function bjk(star_mass::Number, planet_list::Array{Planet}, j::Integer, k::Integer)
+    jbody = planet_list[j]
+    kbody = planet_list[k]
     alpha = jbody.a / kbody.a
     if alpha < 1.0
         component = 0.25 * jbody.n * kbody.m / (star_mass + jbody.m) * alpha^2 * laplace_coefficient(1, 3/2, alpha)
@@ -139,26 +169,34 @@ function bjk(star_mass, jbody, kbody)
 end
 
 
-function secular_A(star_mass::Float64, planet_list::Array{Planet})
-    A = zeros(multiplicity, multiplicity)
+function secular_A(star_mass::Number, planet_list::Array{Planet})
+    multiplicity = size(planet_list)[1]
+    A = zeros(multiplicity, multiplicity) * u"perYear"
     for j = 1 : multiplicity
         for k = 1 : multiplicity
             if k != j
-                A[j, k] = ajk(star_mass, planet_list[j], planet_list[k])
+                A[j, k] = ajk(star_mass, planet_list, j, k)
             else
-                A[j, k] = ajj(star_mass, planet_list[j], planet_list[k])
+                A[j, k] = ajj(star_mass, planet_list, j)
+            end
+        end
+    end
     return A
 end
 
 
-function secular_B(star_mass::Float64, planet_list::Array{Planet})
-    B = zeros(multiplicity, multiplicity)
+function secular_B(star_mass::Number, planet_list::Array{Planet})
+    multiplicity = size(planet_list)[1]
+    B = zeros(multiplicity, multiplicity) * u"perYear"
     for j = 1 : multiplicity
         for k = 1 : multiplicity
             if k != j
-                B[j, k] = bjk(star_mass, planet_list[j], planet_list[k])
+                B[j, k] = bjk(star_mass, planet_list, j, k)
             else
-                B[j, k] = bjj(star_mass, planet_list[j], planet_list[k])
+                B[j, k] = bjj(star_mass, planet_list, j)
+            end
+        end
+    end
     return B
 end
 
@@ -169,25 +207,25 @@ end
 
 
 function hecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs * sin.(g * t + beta)
+    res = eccs .* sin.(g * t + beta)
     return res
 end
 
 
 function kecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs * cos.(g * t + beta)
+    res = eccs .* cos.(g * t + beta)
     return res
 end
 
 
 function pinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs * sin.(f * t + gamma)
+    res = incs .* sin.(f * t + gamma)
     return res
 end
 
 
 function qinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs * cos.(f * t + gamma)
+    res = incs .* cos.(f * t + gamma)
     return res
 end
 
@@ -214,6 +252,7 @@ end
 
 
 function get_initial_values(planet_list::Array{Planet})
+    multiplicity = size(planet_list)[1]
     # Osculating values of h, k, p, q for each planet
     h = zeros(multiplicity); k = zeros(multiplicity)
     p = zeros(multiplicity); q = zeros(multiplicity)
@@ -236,6 +275,7 @@ end
 
 function get_scales_and_phases(eccs::Matrix{Float64}, incs::Matrix{Float64},
                                planet_list::Array{Planet})
+    multiplicity = size(planet_list)[1]
     # Linear algebra that retrieves S_1 * sin(beta_1), T_1 * sin(gamma_1), and so on
     init = get_initial_values(planet_list)
     e_init_matrix = zeros(multiplicity, 2)
@@ -256,7 +296,7 @@ function get_scales_and_phases(eccs::Matrix{Float64}, incs::Matrix{Float64},
     scale_T = zeros(multiplicity)
     beta    = zeros(multiplicity)
     gamma   = zeros(multiplicity)
-    for i in 1 : multiplicity
+    for i = 1 : multiplicity
         scale_S[i] = sqrt(eres[i, 1]^2 + eres[i, 2]^2)
         scale_T[i] = sqrt(ires[i, 1]^2 + ires[i, 2]^2)
         beta[i]    = atan(eres[i, 1], eres[i, 2])
@@ -270,14 +310,41 @@ end
 function run_and_plot(time::Vector{Float64},
                       eccs::Matrix{Float64}, incs::Matrix{Float64},
                       g::Vector{Float64}, f::Vector{Float64},
-                      beta::Vector{Float64}, gamma::Vector{Float64})
-    for 
+                      beta::Vector{Float64}, gamma::Vector{Float64},
+                      multiplicity::Integer)
+    # Generate time series
+    e_series = [[] for _ in 1 : multiplicity]
+    i_series = [[] for _ in 1 : multiplicity]
+    for t in time
+        es = ecc(eccs, g, beta, t)
+        is = inc(incs, f, gamma, t)
+        for k = 1 : multiplicity
+            push!(e_series[k], es[k])
+            push!(i_series[k], is[k])
+        end
+    end
+
+    # Make plot
+    ecc_plot = plot(
+        time, e_series,
+        xlabel="Time (yr)",
+        ylabel="e",
+        label=transpose(1:multiplicity),
+        linewidth=3
+    )
+    inc_plot = plot(
+        time, i_series,
+        xlabel="Time (yr)",
+        ylabel="I (deg)",
+        label=false,
+        linewidth=3
+    )
+    my_plot = plot(ecc_plot, inc_plot, layout=(1, 2))
+    savefig(my_plot, "secular.png")
 end
 
 
 function main()
-    global multiplicity = 0
-
     ## TEST SYSTEM
     # Sun
     msun = 1.0 * ua.Msun
@@ -288,12 +355,12 @@ function main()
     saturn = makeplanet(msun, msat, 9.554841, 0.0575481, 2.48795, 113.1334, 88.719425)
     # 2-planet system
     planet_list = [jupiter, saturn]
-    solsys = makesystem(planet_list) # use the SolarSystem struct for everything if all else works!
+    solsys = makesystem(msun, planet_list) # use the SolarSystem struct for everything if all else works!
 
-    tt = range(-1.0e5, 1.0e5, 10_000)
+    tt = collect(range(-1.0e5, 1.0e5, 10_000))
 
-    A = secular_A(star_mass, planet_list)
-    B = secular_B(star_mass, planet_list)
+    A = secular_A(solsys.star_mass, planet_list)
+    B = secular_B(solsys.star_mass, planet_list)
 
     g = eigvals(A / 1u"perYear")
     f = eigvals(B / 1u"perYear")
@@ -302,13 +369,10 @@ function main()
     incs = swapcols(incs, 1, 2)
 
     scale_S, scale_T, beta, gamma = get_scales_and_phases(eccs, incs, planet_list)
-    eccs_scaled = transpose(scale_S) * eccs
-    incs_scaled = transpose(scale_T) * incs
+    eccs_scaled = Matrix(transpose(scale_S) * eccs)
+    incs_scaled = Matrix(transpose(scale_T) * incs)
 
-    for t in tt
-
-
-
+    run_and_plot(tt, eccs_scaled, incs_scaled, g, f, beta, gamma, solsys.multiplicity)
 end
 
 
