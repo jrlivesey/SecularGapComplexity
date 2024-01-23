@@ -207,25 +207,25 @@ end
 
 
 function hecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs .* sin.(g * t + beta)
+    res = eccs .* sin.((g * t + beta) * pi/180.0)
     return res
 end
 
 
 function kecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs .* cos.(g * t + beta)
+    res = eccs .* cos.((g * t + beta) * pi/180.0)
     return res
 end
 
 
 function pinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs .* sin.(f * t + gamma)
+    res = incs .* sin.((f * t + gamma) * pi/180.0)
     return res
 end
 
 
 function qinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs .* cos.(f * t + gamma)
+    res = incs .* cos.((f * t + gamma) * pi/180.0)
     return res
 end
 
@@ -299,8 +299,8 @@ function get_scales_and_phases(eccs::Matrix{Float64}, incs::Matrix{Float64},
     for i = 1 : multiplicity
         scale_S[i] = sqrt(eres[i, 1]^2 + eres[i, 2]^2)
         scale_T[i] = sqrt(ires[i, 1]^2 + ires[i, 2]^2)
-        beta[i]    = atan(eres[i, 1], eres[i, 2])
-        gamma[i]   = atan(ires[i, 1], ires[i, 2])
+        beta[i]    = atan(eres[i, 1], eres[i, 2]) * 180.0/pi
+        gamma[i]   = atan(ires[i, 1], ires[i, 2]) * 180.0/pi
     end
 
     return scale_S, scale_T, beta, gamma
@@ -319,6 +319,9 @@ function run_and_plot(time::Vector{Float64},
         es = ecc(eccs, g, beta, t)
         is = inc(incs, f, gamma, t)
         for k = 1 : multiplicity
+            # if k == 1
+            #     println(es[k])
+            # end
             push!(e_series[k], es[k])
             push!(i_series[k], is[k])
         end
@@ -339,7 +342,7 @@ function run_and_plot(time::Vector{Float64},
         label=false,
         linewidth=3
     )
-    my_plot = plot(ecc_plot, inc_plot, layout=(1, 2))
+    my_plot = plot(ecc_plot, inc_plot, layout=(1, 2), size=(800, 300))
     savefig(my_plot, "secular.png")
 end
 
@@ -369,8 +372,13 @@ function main()
     incs = swapcols(incs, 1, 2)
 
     scale_S, scale_T, beta, gamma = get_scales_and_phases(eccs, incs, planet_list)
-    eccs_scaled = Matrix(transpose(scale_S) * eccs)
-    incs_scaled = Matrix(transpose(scale_T) * incs)
+    eccs_scaled = scale_S .* eccs
+    incs_scaled = transpose(scale_T) .* incs # Not quite sure why this is necessary
+
+    # println()
+    # println(eccs_scaled)
+    # println(incs_scaled)
+    # exit(0)
 
     run_and_plot(tt, eccs_scaled, incs_scaled, g, f, beta, gamma, solsys.multiplicity)
 end
