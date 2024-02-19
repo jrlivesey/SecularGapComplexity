@@ -360,7 +360,7 @@ function run_and_plot(time::Vector{Float64},
     # Make plot
     ecc_plot = plot(
         # time, e_series,
-        [time, time],[e_series[4], e_series[5]],
+        [time, time],[e_series[1], e_series[2]],
         xlabel="Time (yr)",
         ylabel="e",
         label=transpose(1:multiplicity),
@@ -368,7 +368,7 @@ function run_and_plot(time::Vector{Float64},
     )
     inc_plot = plot(
         # time, i_series,
-        [time, time],[i_series[4], i_series[5]],
+        [time, time],[i_series[1], i_series[2]],
         xlabel="Time (yr)",
         ylabel="I (deg)",
         label=false,
@@ -456,7 +456,7 @@ function main()
     saturn = makeplanet(msun, 568.46 * mconv, 9.53707032, 0.05415060, 2.48446, 113.71504, 92.43194)
     uranus = makeplanet(msun, 86.832 * mconv, 19.19126393, 0.04716771, 0.76986, 74.22988, 170.96424)
     neptune = makeplanet(msun, 102.43 * mconv, 30.06896348, 0.00858587, 1.76917, 131.72169, 44.97135)
-    planet_list = [mercury, venus, earth, mars, jupiter, saturn]
+    planet_list = [jupiter, saturn]
     solsys = makesystem(msun, planet_list)
     tt = collect(range(-1.0e5, 1.0e5, 10_000))
 
@@ -494,7 +494,7 @@ function main()
     eccs_scaled = scale_S .* eccs
     # eccs_scaled = transpose(scale_S) .* eccs
     # incs_scaled = scale_T .* incs
-    incs_scaled = scale_T .* incs # Not quite sure why transposing is necessary
+    incs_scaled = transpose(scale_T) .* incs # Not quite sure why transposing is necessary
 
     run_and_plot(tt, eccs_scaled, incs_scaled, g* pi / 180, f* pi / 180, beta, gamma, solsys.multiplicity)
 end
