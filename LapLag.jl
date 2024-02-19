@@ -51,7 +51,7 @@ function makeplanet(star_mass::Number, m::Number, a::Number, e::Number,
     i *= pi/180
     omega *= pi/180
     varpi *= pi/180
-    n = ((star_mass / ua.Msun) * ua.GMsun / (a^3))^0.5
+    n = ((star_mass / ua.Msun) * ua.GMsun / (a^3))^0.5 # units: radians
     return Planet(m, a, e, i, omega, varpi, n)
 end
 
@@ -93,6 +93,8 @@ end
 ###################################################################################################
 # THE SECULAR MATRICES                                                                            #
 ###################################################################################################
+## units of matrix coefficients: computed in radians, converted to degrees
+
 
 
 function ajj(star_mass::Number, planet_list::Array{Planet}, j::Integer)
@@ -194,9 +196,9 @@ function secular_A(star_mass::Number, planet_list::Array{Planet})
     for j = 1 : multiplicity
         for k = 1 : multiplicity
             if k != j
-                A[j, k] = ajk(star_mass, planet_list, j, k)
+                A[j, k] = ajk(star_mass, planet_list, j, k) # degrees / yr
             else
-                A[j, k] = ajj(star_mass, planet_list, j)
+                A[j, k] = ajj(star_mass, planet_list, j) # units: degrees /yr
             end
         end
     end
@@ -226,25 +228,25 @@ end
 
 
 function hecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs * sin.((g * t + beta) * pi/180.0)
+    res = eccs * sin.((g * t + beta) )
     return res
 end
 
 
 function kecc(eccs::Matrix{Float64}, g::Vector{Float64}, beta::Vector{Float64}, t::Float64)
-    res = eccs * cos.((g * t + beta) * pi/180.0)
+    res = eccs * cos.((g * t + beta) )
     return res
 end
 
 
 function pinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs * sin.((f * t + gamma) * pi/180.0)
+    res = incs * sin.((f * t + gamma) )
     return res
 end
 
 
 function qinc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    res = incs * cos.((f * t + gamma) * pi/180.0)
+    res = incs * cos.((f * t + gamma) ) # I moved the conversion out of this method
     return res
 end
 
@@ -258,7 +260,7 @@ end
 
 
 function inc(incs::Matrix{Float64}, f::Vector{Float64}, gamma::Vector{Float64}, t::Float64)
-    p = pinc(incs, f, gamma, t)
+    p = pinc(incs, f, gamma, t) # f and gamma need to be radians
     q = qinc(incs, f, gamma, t)
     i = sqrt.(p.^2 .+ q.^2)
     return i
@@ -277,7 +279,7 @@ function get_initial_values(planet_list::Array{Planet})
     p = zeros(multiplicity); q = zeros(multiplicity)
     for i = 1 : multiplicity
         body = planet_list[i]
-        h[i] = body.e * sin(body.varpi)
+        h[i] = body.e * sin(body.varpi) # angle: radians
         k[i] = body.e * cos(body.varpi)
         p[i] = body.i * sin(body.omega)
         q[i] = body.i * cos(body.omega)
@@ -300,16 +302,18 @@ function get_scales_and_phases(eccs::Matrix{Float64}, incs::Matrix{Float64},
     e_init_matrix = zeros(multiplicity, 2)
     i_init_matrix = zeros(multiplicity, 2)
     for i in 1 : multiplicity
-        e_init_matrix[i, 1] = init["h"][i]
+        e_init_matrix[i, 1] = init["h"][i] 
         e_init_matrix[i, 2] = init["k"][i]
         i_init_matrix[i, 1] = init["p"][i]
         i_init_matrix[i, 2] = init["q"][i]
     end
 
-    eres = inv(eccs) * e_init_matrix # eres[n, 1] are the S_n*sin(beta_n);
+    #eres = inv(eccs) * e_init_matrix # eres[n, 1] are the S_n*sin(beta_n);
                                      # eres[n, 2] are the S_n*cos(beta_n)
-    ires = inv(incs) * i_init_matrix # ires[n, 1] are the T_n*sin(gamma_n);
+    #ires = inv(incs) * i_init_matrix # ires[n, 1] are the T_n*sin(gamma_n);
                                      # ires[n, 2] are the T_n*cos(gamma_n)
+    eres = eccs \ e_init_matrix
+    ires = incs \ i_init_matrix
 
     # println()
     # println(inv(eccs))
@@ -323,11 +327,13 @@ function get_scales_and_phases(eccs::Matrix{Float64}, incs::Matrix{Float64},
     scale_T = zeros(multiplicity)
     beta    = zeros(multiplicity)
     gamma   = zeros(multiplicity)
+    
     for i = 1 : multiplicity
         scale_S[i] = sqrt(eres[i, 1]^2 + eres[i, 2]^2)
         scale_T[i] = sqrt(ires[i, 1]^2 + ires[i, 2]^2)
-        beta[i]    = atan(eres[i, 1], eres[i, 2]) * 180.0/pi
-        gamma[i]   = atan(ires[i, 1], ires[i, 2]) * 180.0/pi
+                # this change doesn't make a difference. angle is in radians
+        beta[i]    = atan(eres[i, 1]/scale_S[i], eres[i, 2]/scale_S[i]) 
+        gamma[i]   = atan(ires[i, 1]/scale_T[i], ires[i, 2]/scale_T[i])
     end
 
     return scale_S, scale_T, beta, gamma
@@ -344,7 +350,7 @@ function run_and_plot(time::Vector{Float64},
     i_series = [[] for _ in 1 : multiplicity]
     for t in time
         es = ecc(eccs, g, beta, t)
-        is = inc(incs, f, gamma, t) * 180.0/pi
+        is = inc(incs, f, gamma, t) * 180.0/pi # convert to degrees for sol
         for k = 1 : multiplicity
             push!(e_series[k], es[k])
             push!(i_series[k], is[k])
@@ -354,7 +360,7 @@ function run_and_plot(time::Vector{Float64},
     # Make plot
     ecc_plot = plot(
         # time, e_series,
-        time, e_series[5],
+        [time, time],[e_series[4], e_series[5]],
         xlabel="Time (yr)",
         ylabel="e",
         label=transpose(1:multiplicity),
@@ -362,7 +368,7 @@ function run_and_plot(time::Vector{Float64},
     )
     inc_plot = plot(
         # time, i_series,
-        time, i_series[5],
+        [time, time],[i_series[4], i_series[5]],
         xlabel="Time (yr)",
         ylabel="I (deg)",
         label=false,
@@ -450,28 +456,29 @@ function main()
     saturn = makeplanet(msun, 568.46 * mconv, 9.53707032, 0.05415060, 2.48446, 113.71504, 92.43194)
     uranus = makeplanet(msun, 86.832 * mconv, 19.19126393, 0.04716771, 0.76986, 74.22988, 170.96424)
     neptune = makeplanet(msun, 102.43 * mconv, 30.06896348, 0.00858587, 1.76917, 131.72169, 44.97135)
-    planet_list = [mercury, venus, earth, mars, jupiter, saturn, uranus, neptune]
+    planet_list = [mercury, venus, earth, mars, jupiter, saturn]
     solsys = makesystem(msun, planet_list)
-    tt = collect(range(-5.0e6, 5.0e6, 10_000))
+    tt = collect(range(-1.0e5, 1.0e5, 10_000))
 
     # # This reproduces Figure 7.4 in MD99
     # test_particle_secfreq(); exit(0)
 
-    A = secular_A(solsys.star_mass, planet_list)
-    B = secular_B(solsys.star_mass, planet_list)
+    A = secular_A(solsys.star_mass, planet_list) # angle: deg / yr
+    B = secular_B(solsys.star_mass, planet_list) # angle: deg / yr
 
     # ecc_eigensystem = eigen(A / 1u"perYear", sortby = x -> abs(x))
     # inc_eigensystem = eigen(B / 1u"perYear", sortby = x -> abs(x))
     ecc_eigensystem = eigen(A / 1u"perYear", sortby=nothing)
     inc_eigensystem = eigen(B / 1u"perYear", sortby=nothing)
-    g = ecc_eigensystem.values
-    f = inc_eigensystem.values
-    eccs = ecc_eigensystem.vectors
-    incs = inc_eigensystem.vectors
-
-    println(g * 3600)
-    println()
-    println(f * 3600)
+    g = ecc_eigensystem.values # angle: deg / yr
+    f = inc_eigensystem.values # angle: deg / yr
+ 
+    eccs = ecc_eigensystem.vectors # angle: deg / yr
+    incs = inc_eigensystem.vectors # angle: deg / yr
+    
+    #println(g * 3600)
+    #println()
+    #println(f * 3600)
     # exit(0)
 
     # g = eigvals(A / 1u"perYear", sortby=nothing)
@@ -483,14 +490,14 @@ function main()
     # incs = swapcols(incs, 1, 2)
 
     scale_S, scale_T, beta, gamma = get_scales_and_phases(eccs, incs, planet_list)
+#    print(scale_S, beta, scale_T, gamma)
     eccs_scaled = scale_S .* eccs
     # eccs_scaled = transpose(scale_S) .* eccs
     # incs_scaled = scale_T .* incs
-    incs_scaled = transpose(scale_T) .* incs # Not quite sure why transposing is necessary
+    incs_scaled = scale_T .* incs # Not quite sure why transposing is necessary
 
-    run_and_plot(tt, eccs_scaled, incs_scaled, g, f, beta, gamma, solsys.multiplicity)
+    run_and_plot(tt, eccs_scaled, incs_scaled, g* pi / 180, f* pi / 180, beta, gamma, solsys.multiplicity)
 end
-
 
 pythonplot()
 my_plot = plot()
