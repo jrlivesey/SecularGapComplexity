@@ -45,6 +45,100 @@ class UndefError(Exception):
 
 
 class EnsemblePair:
+    """
+    An ensemble of gap complexity simulation pairs, with each pair containing a
+    system with and a system without an outer giant companion.
+
+     Attributes
+    ----------
+    num_simulations : int
+        Number of simulation pairs in the ensemble.
+    stip_mult : int
+        Number of planets in the STIP.
+    og_mult : int
+        Number of outer giant companions.
+    inc_scale : float
+        Scale of the Rayleigh distribution from which inclinations are sampled.
+    og_inc : float
+        Orbital inclination of the companion.
+    rng_seed : int
+        Seed for random number generation.
+    rng : numpy.random.Generator
+        Random number generator with a prescribed seed.
+    vlim : float
+        Colorbar limits in heatmaps are +/- vlim.
+    save_simulation_pairs : bool
+        Keep all data from each simulation pair? If True, might run out of
+        memory while running the ensemble.
+    init : bool
+        Has the sample of hypothetical systems been constructed?
+    done : bool
+        Have all Laplace--Lagrange solutions for the systems been computed?
+    og_mass_dist : function
+        Function that generates random masses for the companion.
+    og_sma_dist : function
+        Function that generates random semi-major axes for the companion.
+    method : str
+        Sampling method: either `random` or `grid`.
+    pairs : numpy.ndarray
+        Array of simulation pairs.
+    gc_with : numpy.ndarray
+        Array of time-averaged gap complexity for all systems with a companion.
+    gc_wout : numpy.ndarray
+        Array of time-averaged gap complexity for all systems without a
+        companion.
+    gc_err : numpy.ndarray
+        Array of changes in average gap complexity incurred by the companion
+        for all simulation pairs.
+    proximity_to_resonance : numpy.ndarray
+        Array of proximities to secular resonances for all systems with a
+        companion.
+    mass_array : numpy.ndarray
+        All sampled companion masses.
+    sma_array : numpy.ndarray
+        All sampled companion semi-major axes.
+    alpha_array : numpy.ndarray
+        Ratio between companion semi-major axis and outermost STIP planet semi-
+        major axis for all sampled companion semi-major axes.
+    
+    Methods
+    -------
+    _rng_func(dist, *args)
+        Wraps an arbitrary statistical distribution from numpy.random.
+    set_og_mass_dist(dist, *args)
+        Defines the distribution over which we sample masses for the companion.
+    set_og_sma_dist(dist, *args)
+        Defines the distribution over which we sample semi-major axes for the
+        companion.
+    _random_orbit_separation(sma_first, sma_max)
+        Gets random orbital distances for an additional companion that comply
+        with system-dependent rules.
+    sample(method='random', mass_min=1.0e-3, mass_max=0.5, sma_min=0.75,
+           sma_max=10.0))
+        Generates a sample of hypothetical systems, either randomly or from a
+        grid.
+    run()
+        Computes the Laplace--Lagrange solutions and resulting gap complexity
+        evolutions for every system in the sample.
+    get_proximity_to_resonance()
+        Calculates the proximity of the system to a first-, second-, third-, or
+        fourth-order resonance between inclination eigenfrequencies.
+    histogram(save=False)
+        Generates a histogram of time-averaged gap complexities for all
+        simulations in a random sample.
+    heatmaps(save=False, output=False)
+        Generates a heatmap in the change in gap complexity induced by the
+        companion.
+    secular_resonance_heatmap(save=False, output=False)
+        Generates a map of secular resonances in the parameter space being
+        explored.
+    to_dataframe(save=False, filename=None)
+        Saves the essential information from an ensemble in a pandas dataframe.
+    save(filename=None)
+        Saves an ensemble in a pkl file.
+    load(filename)
+        Re-creates an ensemble from a pkl file.
+    """
 
     def __init__(self, num_simulations=100, stip_mult=4, og_mult=1,
                  inc_scale=2.5, og_inc=10.0, rng_seed=None, vlim=0.15,
@@ -72,19 +166,65 @@ class EnsemblePair:
         return
 
     def _rng_func(self, dist, *args):
+        """
+        Wraps an arbitrary statistical distribution from numpy.random.
+
+        Parameters
+        ----------
+        dist : function
+            The type fo statistical distribution.
+        
+        Returns
+        -------
+        float
+            A random number sampled from that distribution.
+        """
         def rn():
             return dist(*args)
         return rn
 
     def set_og_mass_dist(self, dist, *args):
+        """
+        Defines the distribution over which we sample masses for the companion.
+
+        Parameters
+        ----------
+        dist : function
+            The type of statistical distribution.
+        """
         self.og_mass_dist = self._rng_func(dist, *args)
         return
 
     def set_og_sma_dist(self, dist, *args):
+        """
+        Defines the distribution over which we sample semi-major axes for the
+        companion.
+
+        Parameters
+        ----------
+        dist : function
+            The type of statistical distribution.
+        """
         self.og_sma_dist = self._rng_func(dist, *args)
         return
 
     def _random_orbit_separation(self, sma_first, sma_max):
+        """
+        Gets random orbital distances for an additional companion that comply
+        with system-dependent rules.
+
+        Parameters
+        ----------
+        sma_first : float
+            The semi-major axis of the previously added companion.
+        sma_max : float
+            Maximum semi-major axis allowed.
+        
+        Returns
+        -------
+        float
+            A semi-major axis for the new companion.
+        """
         stdev = 0.1
         # Set mean new semimajor axis at location of 2:1 MMR (idk)
         loc = (4.0**(1.0/3) - 1.0) * sma_first
@@ -96,6 +236,23 @@ class EnsemblePair:
 
     def sample(self, method='random', mass_min=1.0e-3, mass_max=0.5,
                sma_min=0.75, sma_max=10.0):
+        """
+        Generates a sample of hypothetical systems, either randomly or from a
+        grid.
+
+        Parameters
+        ----------
+        method : str
+            The sampling method: either `random` or `grid`.
+        mass_min : float
+            Minimum mass for the companion.
+        mass_max : float
+            Maximum mass for the companion.
+        sma_min : float
+            Minimum semi-major axis for the companion.
+        sma_max : float
+            Maximum semi-major axis for the companion.
+        """
         self.method = method
         if method == 'random':
             try:
@@ -155,6 +312,10 @@ class EnsemblePair:
         return
 
     def run(self):
+        """
+        Computes the Laplace--Lagrange solutions and resulting gap complexity
+        evolutions for every system in the sample.
+        """
         if not self.init:
             self.sample()
         if self.method == 'random':
@@ -188,7 +349,11 @@ class EnsemblePair:
         self.done = True
         return
     
-    def _get_proximity_to_resonance(self):
+    def get_proximity_to_resonance(self):
+        """
+        Calculates the proximity of the system to a first-, second-, third-, or
+        fourth-order resonance between inclination eigenfrequencies.
+        """
         if not self.init:
             self.sample()
         if self.method != 'grid':
@@ -201,12 +366,23 @@ class EnsemblePair:
                 range(int(np.sqrt(self.num_simulations)))
             ):
                 self.pairs[i][j].get_ll_systems()
-                self.proximity_to_resonance[i][j] = degree_of_commensurability(
-                    self.pairs[i][j].sys_with.inclination_eigenvalues()
+                self.proximity_to_resonance[i][j] = np.abs(
+                    degree_of_commensurability(
+                        self.pairs[i][j].sys_with.inclination_eigenvalues()
+                    )
                 )
         return
 
     def histogram(self, save=False):
+        """
+        Generates a histogram of time-averaged gap complexities for all
+        simulations in a random sample.
+
+        Parameters
+        ----------
+        save : bool
+            Save as a PDF?
+        """
         if not self.done:
             self.run()
         else:
@@ -241,7 +417,22 @@ class EnsemblePair:
             pass
         return
 
-    def heatmaps(self, save=False, output=False, key1=None, key2=None):
+    def heatmaps(self, save=False, output=False):
+        """
+        Generates a heatmap in the change in gap complexity induced by the companion.
+
+        Parameters
+        ----------
+        save : bool
+            Save as a PDF?
+        output : bool
+            Return the subplots?
+        
+        Returns
+        -------
+        tuple (matplotlib.pyplot.Figure, matplotlib.pyplot.Axes) or None
+            The generated heatmaps.
+        """
         cmap = mpl.cm.Spectral
         if self.method != 'grid':
             raise NewError('Heatmaps can be made only for data sampled over a grid.')
@@ -295,21 +486,37 @@ class EnsemblePair:
             return
     
     def secular_resonance_heatmap(self, save=False, output=False):
-        self._get_proximity_to_resonance()
+        """
+        Generates a map of secular resonances in the parameter space being
+        explored.
+
+        Parameters
+        ----------
+        save : bool
+            Save as a PDF?
+        output : bool
+            Return the subplots?
+        
+        Returns
+        -------
+        tuple (Figure, Axes) or None
+            The generated heatmaps.
+        """
+        self.get_proximity_to_resonance()
         cmap = mpl.cm.magma
         fig, ax = plt.subplots(1, 1, dpi=200)
         self.alpha_array = self.sma_array / (10.0 ** (2.0/3 - 1.0)) # ratio between OG sma and that of outermost TIP
         if self.vlim is None:
-            self.vlim = np.abs(max([self.proximity_to_resonance.min(),
+            self.vlim = max(np.abs([self.proximity_to_resonance.min(),
                                     self.proximity_to_resonance.max()]))
         else:
             pass
         _a, _m = np.meshgrid(self.alpha_array, self.mass_array)
-        ax.pcolormesh(_a, _m, self.proximity_to_resonance, vmin=-self.vlim,
+        ax.pcolormesh(_a, _m, self.proximity_to_resonance, vmin=0.0,
                       vmax=self.vlim, cmap=cmap)
         cb = plt.colorbar(
             mpl.cm.ScalarMappable(cmap=cmap,
-                                  norm=mpl.colors.Normalize(-self.vlim,
+                                  norm=mpl.colors.Normalize(0.0,
                                                             self.vlim)
             ),
             ax=ax
@@ -327,6 +534,21 @@ class EnsemblePair:
             return
 
     def to_dataframe(self, save=False, filename=None):
+        """
+        Saves the essential information from an ensemble in a pandas dataframe.
+
+        Parameters
+        ----------
+        save : bool
+            Save in a CSV file?
+        filename : str
+            Target location for the CSV file.
+        
+        Returns
+        -------
+        pandas.DataFrame
+            A dataframe containing the essential information from the ensemble.
+        """
         if not self.done:
             self.run()
         if filename is None:
@@ -359,6 +581,14 @@ class EnsemblePair:
         return df
 
     def save(self, filename=None):
+        """
+        Saves an ensemble in a pkl file.
+
+        Parameters
+        ----------
+        filename : str
+            Target location for the pkl file.
+        """
         if not self.done:
             self.run()
         if filename is None:
@@ -371,6 +601,14 @@ class EnsemblePair:
         return
 
     def load(self, filename):
+        """
+        Re-creates an ensemble from a pkl file.
+
+        Parameters
+        ----------
+        filename : str
+            The location of the pkl file.
+        """
         # with open(filename, 'rb') as pklfile:
         #     tmp = pickle.load(pklfile)
         # self.__dict__.update(tmp)
@@ -379,6 +617,83 @@ class EnsemblePair:
 
 
 class SimulationPair:
+    """
+    A pair of gap complexity simulations for the same system, one incorporating
+    and the other disregarding an outer giant companion.
+
+    Attributes
+    ----------
+    stip_mult : int
+        The number of planets in the STIP.
+    inc_scale : float
+        The parameter of the Rayleigh distribution from which inclinations are
+        sampled, in radians.
+    og_inc : float
+        The orbital inclination of the companion, in radians.
+    simulation_time : int
+        Number of minimum dynamical timescales for which the simulation is run.
+    stellar_radius : float
+        Radius of the star, in G = 1 and M = 1 length units.
+    rng_seed : int
+        Seed for random number generation.
+    with_og : rebound.Simulation
+        N-body simulation with the companion.
+    wout_og : rebound.Simulation
+        N-body simulation without the companion.
+    min_dynamical_timescale : float
+        The minimum dynamical timescale in the system (orbital period of the
+        innermost planet).
+    time : numpy.ndarray
+        Range of time over which the Laplace--Lagrange solution is computed.
+    og_mass : float
+        Mass of the companion, in units of the primary mass.
+    og_sma : float
+        Semi-major axis of the companion, in G = 1 and M = 1 length units.
+    sys_with : celmech.secular.LaplaceLagrangeSystem
+        Secular dynamics simulation with the companion.
+    sys_wout : celmech.secular.LaplaceLagrangeSystem
+        Secular dynamics simulation without the companion.
+    sol_with : dict
+        Laplace--Lagrange solution with the companion.
+    sol_wout : dict
+        Laplace--Lagrange solution without the companion.
+    mean_stip_inclination_with : float
+        Inclination of the total STIP angular momentum in the current reference
+        frame, for the system with the companion.
+    mean_stip_inclination_wout : float
+        Inclination of the total STIP angular momentum in the current reference
+        frame, for the system without the companion.
+    gc_with : numpy.ndarray
+        Gap complexity with time for the system with the companion.
+    gc_wout : numpy.ndarray
+        Gap complexity with time for the system without the companion.
+    mean_gc_with : float
+        Time-averaged gap complexity for the system with the companion.
+    mean_gc_wout : float
+        Time-averaged gap complexity for the system without the companion.
+    
+    Methods
+    -------
+    add(m, a)
+        Adds a companion, but only to one of the simulations.
+    get_ll_systems()
+        Retrieves the celmech Laplace--Lagrange systems.
+    get_ll_solutions()
+        Solves Lagrange's planetary equations.
+    get_gap_complexity(simulation, solution)
+        Gets the list of currently transiting STIP planets as a function of
+        time, then calculates the corresponding gap complexity with respect to
+        time.
+    get_gap_complexities()
+        Calculates the time-dependent gap complexity of the system based on the
+        orbital inclinations.
+    _get_nan_limits(time_series, time=None)
+        Retrieves temporal ranges in which a time series (e.g., gap complexity)
+        is a NaN.
+    plot(orb_elem='inc', save=False)
+        Makes a publication-quality plot of the inclination and gap complexity
+        evolution obtained by solving the planetary equations.
+    """
 
     def __init__(self, stip_mult, inc_scale=2.5, og_inc=10.0,
                  simulation_time=50_000, stellar_radius=0.005, rng_seed=None):
@@ -398,7 +713,15 @@ class SimulationPair:
 
     def add(self, m, a):
         """
-        Adds a companion, but only to the sim without giants.
+        Adds a companion, but only to one of the simulations.
+
+        Parameters
+        ----------
+        m : float
+            Mass of the outer giant companion, in units of the primary mass.
+        a : float
+            Semi-major axis of the outer giant companion, in G = 1, M = 1
+            units.
         """
         self.og_mass = m
         self.og_sma  = a
@@ -410,6 +733,13 @@ class SimulationPair:
     def get_ll_systems(self):
         """
         Retrieves the celmech Laplace--Lagrange systems.
+
+        Returns
+        -------
+        celmech.secular.LaplaceLagrangeSystem
+            The Laplace--Lagrange system with an outer giant.
+        celmech.secular.LaplaceLagrangeSystem
+            The Laplace--Lagrange system without an outer giant.
         """
         self.sys_with = LaplaceLagrangeSystem.from_Simulation(self.with_og)
         self.sys_wout = LaplaceLagrangeSystem.from_Simulation(self.wout_og)
@@ -418,6 +748,14 @@ class SimulationPair:
     def get_ll_solutions(self):
         """
         Solves Lagrange's planetary equations.
+
+        Returns
+        -------
+        dict
+            The Laplace--Lagrange solution for the system with an outer giant.
+        dict
+            The Laplace--Lagrange solution for the system without an outer
+            giant.
         """
         self.sol_with = self.sys_with.secular_solution(self.time)
         self.sol_wout = self.sys_wout.secular_solution(self.time)
@@ -427,6 +765,18 @@ class SimulationPair:
         """
         Gets the list of currently transiting STIP planets as a function of time,
         then calculates the corresponding gap complexity with respect to time.
+
+        Parameters
+        ----------
+        simulation : rebound.Simulation
+            The N-body simulation of the system.
+        solution : dict
+            The Laplace--Lagrange solution calculated by celmech.
+        
+        Returns
+        -------
+        numpy.ndarray
+            The sequence of observed gap complexities with time.
         """
         obs_gc = np.array([])
         stip_inc = np.array([])
@@ -451,6 +801,17 @@ class SimulationPair:
         return obs_gc
 
     def get_gap_complexities(self):
+        """
+        Calculates the time-dependent gap complexity of the system based on the
+        orbital inclinations.
+
+        Returns
+        -------
+        numpy.ndarray
+            Gap complexity of the system with an outer giant.
+        numpy.ndarray
+            Gap complexity of the system without an outer giant.
+        """
         self.gc_with = self.get_gap_complexity(self.with_og, self.sol_with)
         self.gc_wout = self.get_gap_complexity(self.wout_og, self.sol_wout)
         try:
@@ -464,6 +825,23 @@ class SimulationPair:
         return self.gc_with, self.gc_wout
 
     def _get_nan_limits(self, time_series, time=None):
+        """
+        Retrieves temporal ranges in which a time series (e.g., gap complexity)
+        is a NaN.
+
+        Parameters
+        ----------
+        time_series : numpy.ndarray
+            The time series in question.
+        time : numpy.ndarray
+            The corresponding range in time.
+        
+        Returns
+        -------
+        list (tuple) (float)
+            Start and end times for each span of time in which the time series
+            is a NaN.
+        """
         if time is not None:
             pass
         else:
@@ -490,11 +868,19 @@ class SimulationPair:
         """
         Makes a publication-quality plot of the inclination and gap complexity
         evolution obtained by solving the planetary equations.
+
+        Parameters
+        ----------
+        orb_elem : str
+            The orbital element whose evolution is plotted. Defaults to
+            inclination; only change for a quick check on the other elements.
+        save : bool
+            Save the figure as a PDF?
         """
         # Plot params
         mpl.rcParams['text.usetex'] = True
         mpl.rcParams['font.family'] = 'cmu-serif'
-        mpl.rcParams['font.size'] = 16
+        mpl.rcParams['font.size'] = 10
         palette = seaborn.color_palette('colorblind', self.with_og.N)
         alpha = 1.0
         lw = 2
@@ -571,6 +957,19 @@ class SimulationPair:
 def max_transiting_inclination(stellar_radius, sma):
     """
     Calculates the maximum transiting inclination of a planet in the system.
+
+    Parameters
+    ----------
+    stellar_radius : float
+        The radius of the star in au.
+    sma : float
+        The semi-major axis of the planet in au.
+    
+    Returns
+    -------
+    float
+        The maximum orbital inclination the planet can achieve while
+        transiting, in degrees.
     """
     max_inc_radians = np.arctan(stellar_radius / sma)
     max_inc_degrees = max_inc_radians * to_degrees
@@ -580,6 +979,21 @@ def max_transiting_inclination(stellar_radius, sma):
 def make_system(stip_mult, inc_scale, rng_seed):
     """
     Initializes a REBOUND simulation containing the STIP.
+
+    Parameters
+    ----------
+    stip_mult : int
+        The number of planets in the STIP.
+    inc_scale : float
+        Mean value in the Rayleigh distribution for mutual inclinations, in
+        radians.
+    rng_seed : int
+        Seed for random number generation.
+    
+    Returns
+    -------
+    rebound.Simulation
+        An N-body simulation containing the primary and the STIP.
     """
     sim = reb.Simulation()
     rng = np.random.default_rng(rng_seed)
@@ -603,7 +1017,17 @@ def make_system(stip_mult, inc_scale, rng_seed):
 
 def print_cmax(tabular=True):
     """
-    Values of C_max calculated by Gilbert & Fabrycky (2020)
+    Values of C_max calculated by Gilbert & Fabrycky (2020).
+
+    Parameters
+    ----------
+    tabular : bool
+        Return as a pandas dataframe?
+    
+    Returns
+    -------
+    pandas.DataFrame or pandas.Series
+        Tabulated C_max values in the specified format.
     """
     data = {
         'n': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
@@ -618,6 +1042,16 @@ def print_cmax(tabular=True):
 def gap_complexity(periods):
     """
     Calculates the gap complexity from a list of observed periods.
+
+    Parameters
+    ----------
+    periods : list (float)
+        List of orbital periods in the system.
+    
+    Returns
+    -------
+    float
+        The derived gap complexity.
     """
     cmax = print_cmax(tabular=False)
     if len(periods) < 3:
@@ -639,6 +1073,19 @@ def minimum_difference(resonance_list, frequency_ratio):
     """
     Finds the minimum difference between a given frequency ratio and a list of
     resonances.
+
+    Parameters
+    ----------
+    resonance_list : list (float)
+        List of integer ratio values to test.
+    frequency_ratio : float
+        Ratio of two frequencies in the system.
+    
+    Returns
+    -------
+    float
+        Minimum fractional difference between the given ratio and one of the
+        integer ratios.
     """
     min_diff = 10.0
     for res in resonance_list:
@@ -655,6 +1102,17 @@ def degree_of_commensurability(frequencies):
     Takes a list of frequencies (e.g., inclination eigenfrequencies) and
     identifies the pair of most commensurate frequencies. Returns the deviation
     from an integer ratio.
+
+    Parameters
+    ----------
+    frequencies : list (float)
+        List of frequencies to test.
+    
+    Returns
+    -------
+    float
+        Minimum fractional difference between an integer ratio and a ratio of
+        given frequencies.
     """
     first_order_resonances = [
         1.0 / 2.0,
@@ -710,7 +1168,17 @@ def degree_of_commensurability(frequencies):
 
 def load_ensemble_pair(filename):
     """
-    Reconstructs ensemble pair from pkl file.
+    Reconstructs a pickled EnsemblePair.
+
+    Parameters
+    ----------
+    filename : str
+        The address of the pkl file.
+    
+    Returns
+    -------
+    EnsemblePair
+        The saved simulation ensemble.
     """
     new_pair = EnsemblePair()
     new_pair.load(filename)
