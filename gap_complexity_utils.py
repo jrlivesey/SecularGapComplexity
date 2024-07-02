@@ -20,7 +20,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import seaborn
 
 import celmech
-from celmech import Poincare, PoincareHamiltonian
 from celmech.secular import LaplaceLagrangeSystem
 
 
@@ -366,10 +365,10 @@ class EnsemblePair:
                 range(int(np.sqrt(self.num_simulations)))
             ):
                 self.pairs[i][j].get_ll_systems()
+                freqs = self.pairs[i][j].sys_with.inclination_eigenvalues()
+                freqs.sort()
                 self.proximity_to_resonance[i][j] = np.abs(
-                    degree_of_commensurability(
-                        self.pairs[i][j].sys_with.inclination_eigenvalues()
-                    )
+                    degree_of_commensurability(freqs)
                 )
         return
 
@@ -499,16 +498,17 @@ class EnsemblePair:
         
         Returns
         -------
-        tuple (Figure, Axes) or None
+        tuple (matplotlib.pyplot.Figure, matplotlib.pyplot.Axes) or None
             The generated heatmaps.
         """
         self.get_proximity_to_resonance()
-        cmap = mpl.cm.magma
+        cmap = mpl.cm.magma_r
         fig, ax = plt.subplots(1, 1, dpi=200)
         self.alpha_array = self.sma_array / (10.0 ** (2.0/3 - 1.0)) # ratio between OG sma and that of outermost TIP
         if self.vlim is None:
-            self.vlim = max(np.abs([self.proximity_to_resonance.min(),
-                                    self.proximity_to_resonance.max()]))
+            # self.vlim = max(np.abs([self.proximity_to_resonance.min(),
+            #                         self.proximity_to_resonance.max()]))
+            self.vlim = self.proximity_to_resonance.max()
         else:
             pass
         _a, _m = np.meshgrid(self.alpha_array, self.mass_array)
@@ -930,7 +930,7 @@ class SimulationPair:
             # ax.text(0.025, 0.9, 'With OG', transform=ax.transAxes)
             ax.xaxis.set_ticklabels([])
         for ax in axes[1, :]:
-            ax.set_xlabel(r'$t/t_\mathrm{dyn} \times 10^{-4}$')
+            ax.set_xlabel(r'$t/t_\mathrm{dyn} \times 10^4$')
             # ax.text(0.025, 0.9, 'Without OG', transform=ax.transAxes)
         # for ax in axes[:, 0]:
         #     ylim = max_max_inc + 2.0
@@ -1090,6 +1090,7 @@ def minimum_difference(resonance_list, frequency_ratio):
     min_diff = 10.0
     for res in resonance_list:
         diff = np.abs(frequency_ratio - res) / res
+        # diff = np.abs(frequency_ratio - res)
         if diff < min_diff:
             min_diff = diff
         else:
