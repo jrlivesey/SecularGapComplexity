@@ -11,9 +11,3 @@ This is the repository for the paper "Gap Complexity of a Tightly Packed Planeta
 % python makeplots.py 1600
 ```
 This will generate an individual PDF for each subplot from our Fig. 5. Increase or decrease the sample size by using a perfect square other than 1600.
-
-**Figure 6:** In the terminal, run the following.
-```
-% python resonance-plot.py 1600
-```
-This will generate an individual PDF for each subplot from our Fig. 6. Increase or decrease the sample size by using a perfect square other than 1600.
