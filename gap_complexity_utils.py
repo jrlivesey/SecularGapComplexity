@@ -8,19 +8,22 @@ Joseph Livesey, 2024
 import numpy as np
 import astropy.units as u
 import astropy.constants as const
-import rebound as reb
 import pandas as pd
 import itertools
 import pickle
-from copy import deepcopy
+# from copy import deepcopy
+# from ctypes import cdll, c_double
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import seaborn
 
+import rebound
 import celmech
 from celmech.secular import LaplaceLagrangeSystem
+from celmech.nbody_simulation_utilities \
+import reb_orbits, get_simarchive_integration_results
 
 
 to_radians = np.pi/180.0
@@ -69,6 +72,8 @@ class EnsemblePair:
     save_simulation_pairs : bool
         Keep all data from each simulation pair? If True, might run out of
         memory while running the ensemble.
+    randomize_inclinations : bool
+        Draw new STIP inclinations for each SimulationPair in the ensemble?
     init : bool
         Has the sample of hypothetical systems been constructed?
     done : bool
@@ -141,13 +146,13 @@ class EnsemblePair:
 
     def __init__(self, num_simulations=100, stip_mult=4, og_mult=1,
                  inc_scale=2.5, og_inc=10.0, rng_seed=None, vlim=0.15,
-                 save_simulation_pairs=True):
+                 save_simulation_pairs=True, randomize_inclinations=True):
         # Class attributes
         self.num_simulations = num_simulations
         self.stip_mult = stip_mult
         self.og_mult   = og_mult
         self.inc_scale = inc_scale
-        self.og_inc = og_inc
+        self.og_inc    = og_inc
         if rng_seed is not None:
             self.rng_seed = rng_seed
             self.rng = np.random.default_rng(rng_seed)
@@ -155,6 +160,7 @@ class EnsemblePair:
             pass
         self.vlim = vlim
         self.save_simulation_pairs = save_simulation_pairs
+        self.randomize_inclinations = randomize_inclinations
         self.init = False
         self.done = False
 
@@ -171,7 +177,7 @@ class EnsemblePair:
         Parameters
         ----------
         dist : function
-            The type fo statistical distribution.
+            The type of statistical distribution.
         
         Returns
         -------
@@ -278,8 +284,7 @@ class EnsemblePair:
             for i in range(self.num_simulations):
                 sim_pair = SimulationPair(self.stip_mult, self.inc_scale,
                                           self.og_inc, stellar_radius=0.005,
-                                          simulation_time=1.0e6,
-                                          rng_seed=self.rng_seed)
+                                          rng_seed=self.rng_seed+i)
                 aj = sma_list[i]
                 for j in range(self.og_mult):
                     sim_pair.add(m=mass_list[i+j], a=aj)
@@ -298,11 +303,14 @@ class EnsemblePair:
             self.mass_array = np.logspace(np.log10(mass_min),
                                           np.log10(mass_max), side_len)
             self.sma_array  = np.linspace(sma_min, sma_max, side_len)
+            dseed = 0
             for i in range(side_len):
                 for j in range(side_len):
+                    if self.randomize_inclinations:
+                        dseed = i * side_len + j # Amount by which to advance seed
                     sim_pair = SimulationPair(self.stip_mult, self.inc_scale,
                                               self.og_inc, stellar_radius=0.005,
-                                              rng_seed=self.rng_seed)
+                                              rng_seed=self.rng_seed+dseed)
                     sim_pair.add(m=self.mass_array[i], a=self.sma_array[j])
                     self.pairs[i][j] = sim_pair # need 2D for grid sampling
         else:
@@ -317,21 +325,21 @@ class EnsemblePair:
         """
         if not self.init:
             self.sample()
+        self.gc_with = np.empty(self.pairs.shape)
+        self.gc_wout = np.empty(self.pairs.shape)
+        self.amd_metric = np.empty(self.pairs.shape)
         if self.method == 'random':
             for sim_pair in self.pairs:
                 sim_pair.get_ll_systems()
                 sim_pair.get_ll_solutions()
                 sim_pair.get_gap_complexities()
-            self.gc_with = np.empty((self.num_simulations))
-            self.gc_wout = np.empty((self.num_simulations))
             for i in range(self.num_simulations):
-                self.gc_with[i] = np.nanmean(self.pairs[i].gc_with)
-                self.gc_wout[i] = np.nanmean(self.pairs[i].gc_wout)
+                self.gc_with[i] = self.pairs[i].mean_gc_with
+                self.gc_wout[i] = self.pairs[i].mean_gc_wout
+                self.amd_metric[i] = self.pairs[i].amd_metric()
                 if not self.save_simulation_pairs:
                     self.pairs[i] = None
         elif self.method == 'grid':
-            self.gc_with = np.empty(self.pairs.shape)
-            self.gc_wout = np.empty(self.pairs.shape)
             for i, j in itertools.product(
                 range(int(np.sqrt(self.num_simulations))),
                 range(int(np.sqrt(self.num_simulations)))
@@ -339,10 +347,14 @@ class EnsemblePair:
                 self.pairs[i][j].get_ll_systems()
                 self.pairs[i][j].get_ll_solutions()
                 self.pairs[i][j].get_gap_complexities()
-                self.gc_with[i][j] = np.nanmean(self.pairs[i][j].gc_with)
-                self.gc_wout[i][j] = np.nanmean(self.pairs[i][j].gc_wout)
+                self.gc_with[i][j] = self.pairs[i][j].mean_gc_with
+                self.gc_wout[i][j] = self.pairs[i][j].mean_gc_wout
+                self.amd_metric[i][j] = self.pairs[i][j].amd_metric()
                 if not self.save_simulation_pairs:
-                    self.pairs[i][j] = None
+                    if i != 0 or j != 0:
+                        self.pairs[i][j] = None
+                    else:
+                        pass
         else:
             raise NewError('Sampling method must be `grid` or `random`.')
         self.done = True
@@ -370,6 +382,61 @@ class EnsemblePair:
                 self.proximity_to_resonance[i][j] = np.abs(
                     degree_of_commensurability(freqs)
                 )
+        return
+    
+    def _mask_nonsecular(self, num_hill_radii=2.0*np.sqrt(3.0)):
+        """
+        Mask out the region of parameter space in which the OG is within so
+        many mutual Hill radii of the outermost STIP planet.
+
+        Parameters
+        ----------
+        num_hill_radii : float
+            The OG must be at least this many mutual Hill radii away to accept
+            the secular solution.
+        
+        Returns
+        -------
+        numpy.ndarray (bool)
+            The mask.
+        """
+        mask = np.zeros(self.pairs.shape, dtype=bool)
+        for i, j in itertools.product(
+            range(int(np.sqrt(self.num_simulations))),
+            range(int(np.sqrt(self.num_simulations)))
+        ):
+            sim = self.pairs[i][j].with_og
+            separation = sim.particles[-1].a - sim.particles[-2].a
+            mhr = mutual_hill_radius_particles(
+                sim.particles[0], sim.particles[-2], sim.particles[-1]
+            )
+            if separation < num_hill_radii * mhr:
+                mask[i][j] = True
+            else:
+                pass
+        return mask
+    
+    def _draw_stability_boundary(self, ax, num_hill_radii=2.0*np.sqrt(3.0)):
+        """
+        Draws a curve showing at what mass the OG is within so many mutual Hill
+        radii of the outermost STIP planet.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            The subplot on which to draw the curve.
+        num_hill_radii : float
+            The OG must be at least this many mutual Hill radii away to accept
+            the secular solution.
+        """
+        cmr = np.vectorize(critical_mass_ratio)
+        max_mass = cmr(
+            self.pairs[0][0].with_og.particles[-2].m,
+            self.pairs[0][0].with_og.particles[-2].a,
+            self.sma_array,
+            num_hill_radii
+        )
+        ax.plot(self.alpha_array, max_mass, c='k', ls='dashed', lw=5)
         return
 
     def histogram(self, save=False):
@@ -416,37 +483,49 @@ class EnsemblePair:
             pass
         return
 
-    def heatmaps(self, save=False, output=False):
+    def heatmaps(self, save=False, mask=False, draw_boundary=False,
+                 output=False):
         """
-        Generates a heatmap in the change in gap complexity induced by the companion.
+        Generates a heatmap in the change in gap complexity induced by the
+        companion.
 
         Parameters
         ----------
         save : bool
             Save as a PDF?
+        mask : bool
+            Mask out likely non-secular scenarios?
+        draw_boundary : bool
+            Draw the curve of maximum stable OG masses?
         output : bool
             Return the subplots?
         
         Returns
         -------
-        tuple (matplotlib.pyplot.Figure, matplotlib.pyplot.Axes) or None
+        tuple (matplotlib.figure.Figure, matplotlib.axes.Axes) or None
             The generated heatmaps.
         """
         cmap = mpl.cm.Spectral
+        # cmap = mpl.cm.bwr
         if self.method != 'grid':
-            raise NewError('Heatmaps can be made only for data sampled over a grid.')
+            raise NewError('Heatmaps can be made only for data sampled over a \
+                            grid.')
         if not self.done:
             self.run()
         else:
             pass
         # fig, axes = plt.subplots(1, 3, figsize=(12, 4), dpi=200, sharex=True)
         fig, ax = plt.subplots(1, 1, dpi=200)
-        self.alpha_array = self.sma_array / (10.0 ** (2.0/3 - 1.0)) # ratio between OG sma and that of outermost TIP
+        self.alpha_array = self.sma_array / self.wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
         self.gc_err = self.gc_with - self.gc_wout
+        print(self.gc_err)
+        print(self.gc_err.min(), self.gc_err.max(), np.std(self.gc_err.ravel()))
         if self.vlim is None:
             self.vlim = np.abs(max([self.gc_err.min(), self.gc_err.max()]))
         else:
             pass
+        if mask:
+            self.gc_err = np.ma.array(self.gc_err, mask=self._mask_nonsecular())
         # axes[0].contourf(self.mass_array, self.sma_array, self.gc_with, cmap=cmap)
         # axes[1].contourf(self.mass_array, self.sma_array, self.gc_wout, cmap=cmap)
         # axes[2].contourf(self.mass_array, self.sma_array, gc_err, cmap=cmap)
@@ -465,7 +544,7 @@ class EnsemblePair:
                                                             self.vlim)
             ),
             # ax=axes[2],
-            ax=ax
+            ax=ax,
         )
         ax.set_yscale('log')
         # for ax in axes:
@@ -476,6 +555,8 @@ class EnsemblePair:
         # ax.invert_yaxis()
         cb.set_label(
             r'$\langle \tilde{\mathcal{C}} \rangle_2 - \langle \tilde{\mathcal{C}} \rangle_1 $')
+        if draw_boundary:
+            self._draw_stability_boundary(ax)
         fig.tight_layout()
         if save:
             fig.savefig('new-heatmaps.pdf')
@@ -498,13 +579,13 @@ class EnsemblePair:
         
         Returns
         -------
-        tuple (matplotlib.pyplot.Figure, matplotlib.pyplot.Axes) or None
+        tuple (matplotlib.figure.Figure, matplotlib.axes.Axes) or None
             The generated heatmaps.
         """
         self.get_proximity_to_resonance()
         cmap = mpl.cm.magma_r
         fig, ax = plt.subplots(1, 1, dpi=200)
-        self.alpha_array = self.sma_array / (10.0 ** (2.0/3 - 1.0)) # ratio between OG sma and that of outermost TIP
+        self.alpha_array = self.sma_array / self.wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
         if self.vlim is None:
             # self.vlim = max(np.abs([self.proximity_to_resonance.min(),
             #                         self.proximity_to_resonance.max()]))
@@ -680,6 +761,18 @@ class SimulationPair:
         Retrieves the celmech Laplace--Lagrange systems.
     get_ll_solutions()
         Solves Lagrange's planetary equations.
+    _run_nbody(simulation, binfile)
+        Runs an N-body simulation using the whfast integrator in rebound, and
+        returns the time series results.
+    _nbody_inclination_solution(results)
+        Produces the data for a plot of relative orbital inclinations with time
+        from an N-body simulation.
+    nbody_with(binfile='.archive.bin')
+        Runs a whfast simulation of the system with an outer companion
+        included.
+    nbody_wout(binfile='.archive.bin')
+        Runs a whfast simulation of the system without the inclusion of an
+        outer companion.
     get_gap_complexity(simulation, solution)
         Gets the list of currently transiting STIP planets as a function of
         time, then calculates the corresponding gap complexity with respect to
@@ -693,10 +786,13 @@ class SimulationPair:
     plot(orb_elem='inc', save=False)
         Makes a publication-quality plot of the inclination and gap complexity
         evolution obtained by solving the planetary equations.
+    plot_nbody_and_secular(legend=False, save=False)
+        Plots the N-body and Laplace--Lagrange solutions for the inclination
+        evolution in the system, to evaluate the accuracy of the latter.
     """
 
     def __init__(self, stip_mult, inc_scale=2.5, og_inc=10.0,
-                 simulation_time=50_000, stellar_radius=0.005, rng_seed=None):
+                 simulation_time=1.0e9, stellar_radius=0.005, rng_seed=None):
         self.stip_mult = stip_mult
         self.inc_scale = inc_scale
         self.og_inc = og_inc
@@ -704,12 +800,22 @@ class SimulationPair:
         self.stellar_radius = stellar_radius
         self.rng_seed = rng_seed
         self.with_og = make_system(stip_mult, inc_scale, rng_seed)
-        self.wout_og = deepcopy(self.with_og)
+        self.wout_og = self.with_og.copy()
         self.min_dynamical_timescale = self.wout_og.particles[1].P
         self.time = np.linspace(0.0,
                         self.simulation_time * self.min_dynamical_timescale,
                         10_000) / self.min_dynamical_timescale
+        self._nbody_with_done = False
+        self._nbody_wout_done = False
         return
+
+    def _inclination_canonical_coords(self, inc_from_stip):
+        canonical_heliocentric_inclinations = [
+            o.inc for o in reb_orbits(self.with_og, 'canonical heliocentric')
+        ]
+        inc_from_stip *= to_radians
+        inc_from_stip -= np.mean(canonical_heliocentric_inclinations)
+        return inc_from_stip
 
     def add(self, m, a):
         """
@@ -725,9 +831,19 @@ class SimulationPair:
         """
         self.og_mass = m
         self.og_sma  = a
-        # self.og_inc = rng.rayleigh(self.inc_scale * to_radians)
-        self.with_og.add(m=m, a=a, inc=self.og_inc*to_radians)
-        self.with_og.move_to_com()
+        # og_inc_from_stip = np.mean(
+        #     [p.inc for p in self.with_og.particles[1:]]
+        # ) + self.og_inc * to_radians
+        # og_inc_from_stip = self._inclination_canonical_coords(self.og_inc)
+        og_inc_from_stip = self.og_inc * to_radians
+        try:
+            self.with_og.add(
+                m=m, a=a, e=0.0, inc=og_inc_from_stip, pomega=0.0, Omega=0.0
+            )
+            # self.with_og.move_to_hel()
+        except AssertionError as err:
+            print('The OG is within the STIP. Semi-major axes are:')
+            print([p.a for p in self.with_og.particles[1:]])
         return
 
     def get_ll_systems(self):
@@ -760,6 +876,256 @@ class SimulationPair:
         self.sol_with = self.sys_with.secular_solution(self.time)
         self.sol_wout = self.sys_wout.secular_solution(self.time)
         return self.sol_with, self.sol_wout
+    
+    def _run_nbody(self, simulation, binfile):
+        """
+        Runs an N-body simulation using the whfast integrator in rebound, and
+        returns the time series results.
+
+        Parameters
+        ----------
+        simulation : rebound.Simulation
+            The simulation we want to integrate forward.
+        binfile : str
+            The name for the binary simulation archive file.
+        
+        Returns
+        -------
+        dict
+            Archived rebound simulation data, read in with celmech.
+        """
+        self._nbody_with_done = False
+        self._nbody_wout_done = False
+        simulation.dt = 0.01 * self.min_dynamical_timescale
+        simulation.integrator = 'whfast'
+        simulation.max_exit_distance = 20.0
+        simulation.ri_whfast.coordinates = 'democraticheliocentric'
+        simulation.save_to_file(binfile, interval=1e2, delete_file=True)
+        simulation.integrate(self.simulation_time, exact_finish_time=False)
+        return get_simarchive_integration_results(binfile)
+    
+    def _nbody_inclination_solution(self, results):
+        """
+        Produces the data for a plot of relative orbital inclinations with time
+        from an N-body simulation.
+
+        Parameters
+        ----------
+        results : dict
+            Archived rebound simulation data, read in with celmech.
+        
+        Returns
+        -------
+        tuple (numpy.ndarray) (float)
+            Two arrays: one containing the simulation output times and the
+            other containing the inclinations for each planet in the system
+            at each output time.
+        """
+        relative_incs = 1.0 * results['inc']
+        # for ii in range(len(relative_incs)):
+        #     relative_incs[ii] -= np.mean(results['inc'][:self.stip_mult], axis=0)
+        return results['time'], relative_incs
+    
+    def nbody_with(self, binfile='.archive.bin'):
+        """
+        Runs a whfast simulation of the system with an outer companion
+        included.
+
+        Returns
+        -------
+        tuple (numpy.ndarray) (float)
+            Two arrays: one containing the simulation output times and the
+            other containing the inclinations for each planet in the system
+            at each output time.
+        """
+        results = None
+        if self._nbody_with_done:
+            results = get_simarchive_integration_results(binfile)
+        else:
+            results = self._run_nbody(self.with_og, binfile)
+            self._nbody_with_done = True
+        return self._nbody_inclination_solution(results)
+
+    def nbody_wout(self, binfile='.archive.bin'):
+        """
+        Runs a whfast simulation of the system without the inclusion of an
+        outer companion.
+
+        Returns
+        -------
+        tuple (numpy.ndarray) (float)
+            Two arrays: one containing the simulation output times and the
+            other containing the inclinations for each planet in the system
+            at each output time.
+        """
+        results = None
+        if self._nbody_wout_done:
+            results = get_simarchive_integration_results(binfile)
+        else:
+            results = self._run_nbody(self.wout_og, binfile)
+            self._nbody_wout_done = True
+        return self._nbody_inclination_solution(results)
+    
+    # def _run_nbody(self, simulation):
+    #     """
+    #     Runs an N-body simulation using the whfast integrator in rebound.
+
+    #     Parameters
+    #     ----------
+    #     simulation : rebound.Simulation
+    #         The simulation we want to integrate forward.
+        
+    #     Returns
+    #     -------
+    #     tuple (numpy.ndarray) (float)
+    #         Two arrays: one containing the simulation output times and the
+    #         other containing the inclinations for each planet in the system
+    #         at each output time.
+    #     """
+    #     innermost_period = simulation.particles[1].P
+    #     simulation.dt = 0.01 * innermost_period # 1% of innermost period
+    #     end_time = 1.0e6 * innermost_period # 1 million orbits
+
+    #     # number of whfast steps
+    #     num_steps = (end_time + simulation.dt // 2) // simulation.dt
+    #     num_steps = int(num_steps)
+
+    #     num_outputs = 0
+    #     nbody_time = np.empty((num_steps,))
+    #     nbody_inclinations = np.empty((self.stip_mult, num_steps))
+
+    #     def inclination_heartbeat(sim_pointer):
+    #         """
+    #         Heartbeat function for N-body simulations to check the accuracy of the
+    #         Laplace--Lagrange solution.
+
+    #         Parameters
+    #         ----------
+    #         sim_pointer : rebound.particle.LP_Simulation
+    #             Pointer to the rebound simulation.
+    #         """
+    #         global num_outputs, nbody_time, nbody_inclinations
+    #         sim = sim_pointer.contents
+    #         # if num_outputs == 0:
+    #         #     j = 0 # timestep index
+    #         if sim.t > (num_outputs * sim.dt * 1.0e4): # one output every 1e4 orbits
+    #             # nbody_time[j] = sim.t
+    #             nbody_time[num_outputs] = sim.t
+    #             for i in range(self.stip_mult):
+    #                 mean_stip_inc = np.mean(
+    #                     [p.inc for p in sim.particles[1:self.stip_mult]]
+    #                 )
+    #                 nbody_inclinations[i][num_outputs] = \
+    #                 sim.particles[i+1].inc - mean_stip_inc
+    #             num_outputs += 1
+    #         return
+
+    #     # inclination_heartbeat = cdll.LoadLibrary('inclination_heartbeat.so')
+        
+    #     simulation.heartbeat = inclination_heartbeat
+    #     # simulation.integrate(simulation.t + 1)
+    #     simulation.integrate(end_time, exact_finish_time=False)
+
+    #     # nbody_time = c_double.in_dll(inclination_heartbeat, 'nbody_time')
+    #     # nbody_inclinations = c_double.in_dll(inclination_heartbeat, 'nbody_inclinations')
+    #     nbody_time /= innermost_period # convert to same units as secular time
+    #     return nbody_time, nbody_inclinations
+
+    def longest_secular_period(self):
+        """
+        Retrieves the period of the longest secular cycle in the
+        Laplace--Lagrange system.
+
+        Returns
+        -------
+        float
+            The period of the longest secular cycle, in simulation units.
+        """
+        frequencies = np.abs(self.sys_with.inclination_eigenvalues())
+        frequencies = np.sort(frequencies)
+        # Use the second-smallest frequency; one will always be ~zero
+        return 2.0 * np.pi / frequencies[1]
+    
+    def amd(self, primary, secondary):
+        """
+        Calculates the angular momentum deficit (AMD) of one body in the
+        system.
+
+        Parameters
+        ----------
+        primary : rebound.Particle
+            The primary (star) in the system.
+        secondary : rebound.Particle
+            The body whose AMD we want to calculate with respect to the given
+            primary.
+
+        Returns
+        -------
+        float
+            The AMD of the body in question. This quantity is dimensionless,
+            since we use G = 1 natural units.
+        """
+        result = secondary.m * np.sqrt(primary.m * secondary.a) * \
+                 (1.0 - np.sqrt(1.0 - secondary.e * secondary.e) * \
+                 np.cos(secondary.inc))
+        return result
+    
+    def total_amd(self):
+        """
+        Calculates the total angular momentum deficit (AMD) of the system, both
+        including and excluding the outer companion.
+
+        Returns
+        -------
+        tuple (float)
+            The AMD of the STIP alone, and the AMD of the whole system, both
+            dimensionless (G = 1 units).
+        """
+        amds = np.empty((self.stip_mult+1,))
+        for ii in range(self.stip_mult+1):
+            amds[ii] = self.amd(
+                self.with_og.particles[0], self.with_og.particles[ii+1]
+            )
+        amd_with = np.sum(amds)
+        amd_wout = np.sum(amds[:-1])
+        return amd_with, amd_wout
+    
+    def amd_metric(self):
+        """
+        Computes a quantity related to the AMD that might correlate with gap
+        complexity amplification.
+
+        Returns
+        -------
+        float
+            The value of this quantity.
+        """
+        # return self.total_amd()[0] # Just the total AMD of the STIP
+
+        # # AMD, weighted toward higher semi-major axis
+        # per_planet = np.empty((self.stip_mult,))
+        # for ii in range(self.stip_mult):
+        #     per_planet[ii] = (ii + 1) * self.amd(
+        #         self.with_og.particles[0], self.with_og.particles[ii+1]
+        #     )
+        # return np.sum(per_planet)
+
+        # # Normalized AMD (Turrini+ 2020)
+        # amd_per = np.empty((self.stip_mult,))
+        # cam_per = np.emtpy((self.stip_mult,))
+        # for ii in range(self.stip_mult):
+        #     amd_per[ii] = self.amd(
+        #         self.with_og.particles[0], self.with_og.particles[ii+1]
+        #     )
+        #     cam_per[ii] = self.with_og.particles[ii+1].m * \
+        #                   np.sqrt(self.with_og.particles[ii+1].a)
+        # return np.sum(amd_per) / np.sum(cam_per)
+
+        # # Just the inclination of the outermost STIP planet
+        # return self.with_og.particles[-2].inc * to_degrees
+
+        # The variance in the STIP inclinations
+        return np.var([p.inc for p in self.wout_og.particles[1:]]) * to_degrees
     
     def get_gap_complexity(self, simulation, solution):
         """
@@ -857,12 +1223,51 @@ class SimulationPair:
                     start_idx.append(idx)
                 if nan_idx[i+1] != idx + 1:
                     end_idx.append(idx)
-            except IndexError:
+            except IndexError as e:
+                print(e)
+                print(len(time_series))
+                print(idx)
                 pass
         idx_pairs = zip(start_idx, end_idx)
         for pair in idx_pairs:
             nan_times.append((time[pair[0]], time[pair[1]]))
         return nan_times
+
+    def _discontinuities(self, series):
+        """
+        Finds the indices at which a time series has jump discontinuities, so
+        we can prevent them from showing up in a plot.
+
+        Parameters
+        ----------
+        time_series : numpy.ndarray
+            The time series in question.
+        time : numpy.ndarray
+            The corresponding range in time.
+        
+        Returns
+        -------
+        numpy.ndarray (int)
+            Temporal indices at which discontinuities occur.
+        """
+        discontinuous = np.abs(series[1:] - series[:-1]) > 0.01
+        discontinuous = np.roll(discontinuous, 1)
+        return np.argwhere(discontinuous).ravel()
+
+    def _draw_discontinuous_curve(self, ax, time, time_series, color, lw):
+        brs = self._discontinuities(time_series)
+        if len(brs) == 0:
+            ax.plot(time, time_series, c=color, lw=lw)
+        else:
+            time_slices = [
+                time[brs[ii]+1:brs[ii+1]] for ii in range(len(brs)-1)
+            ]
+            tseries_slices = [
+                time_series[brs[ii]+1:brs[ii+1]] for ii in range(len(brs)-1)
+            ]
+            for ii in range(len(time_slices)):
+                ax.plot(time_slices[ii], tseries_slices[ii], c=color, lw=lw)
+        return
 
     def plot(self, orb_elem='inc', save=False):
         """
@@ -886,13 +1291,13 @@ class SimulationPair:
         lw = 2
 
         # Get periods of time in which gap complexity is a NaN
-        plot_time = self.time / 1.0e4
+        plot_time = self.time
+        # plot_time = self.time / 1.0e4
         nan_times_with = self._get_nan_limits(self.gc_with, plot_time)
         nan_times_wout = self._get_nan_limits(self.gc_wout, plot_time)
 
         # Calculation and plotting
         fig, axes = plt.subplots(2, 2, dpi=200, constrained_layout=True)
-        # max_max_inc = 0.0
         for ii, particle in enumerate(self.wout_og.particles[1:]):
             max_inc = max_transiting_inclination(self.stellar_radius,
                                                  particle.a)
@@ -901,28 +1306,34 @@ class SimulationPair:
             axes[0, 0].plot(plot_time,
                             evol_with * to_degrees, c=palette[ii],
                             alpha=alpha, lw=lw, label=str(ii+1))
-            axes[1, 0].plot(plot_time,
+            axes[0, 1].plot(plot_time,
                             evol_wout * to_degrees, c=palette[ii],
                             alpha=alpha, lw=lw)
             if orb_elem == 'inc':
-                for ax in axes[:, 0]:
+                for ax in axes[0, :]:
                     ax.axhline(+max_inc, c=palette[ii], ls='dotted')
                     ax.axhline(-max_inc, c=palette[ii], ls='dotted')
             # if max_inc > max_max_inc:
             #     max_max_inc = max_inc
-        axes[0, 1].plot(plot_time, self.gc_with, lw=lw)
-        axes[1, 1].plot(plot_time, self.gc_wout, lw=lw)
+        # axes[0, 1].plot(plot_time, self.gc_with, lw=lw)
+        # axes[1, 1].plot(plot_time, self.gc_wout, lw=lw)
+        self._draw_discontinuous_curve(
+            axes[1, 0], plot_time, self.gc_with, 'k', lw
+        )
+        self._draw_discontinuous_curve(
+            axes[1, 1], plot_time, self.gc_wout, 'k', lw
+        )
         for pair in nan_times_with:
             _min, _max = (float(lim) for lim in pair)
-            axes[0, 1].axvspan(_min, _max, color='silver')
+            axes[1, 0].axvspan(_min, _max, color='silver')
         for pair in nan_times_wout:
             _min, _max = (float(lim) for lim in pair)
             axes[1, 1].axvspan(_min, _max, color='silver')
         # for ax in axes[:, 1]:
         #     ax.set_ylim(0.0, 1.0)
         axes[0, 0].set_ylabel(r'$I$ (deg)')
-        axes[1, 0].set_ylabel(r'$I$ (deg)')
-        axes[0, 1].set_ylabel(r'$\tilde{\mathcal{C}}$')
+        axes[0, 1].set_ylabel(r'$I$ (deg)')
+        axes[1, 0].set_ylabel(r'$\tilde{\mathcal{C}}$')
         axes[1, 1].set_ylabel(r'$\tilde{\mathcal{C}}$')
         for ax in axes.ravel():
             ax.set_xlim(plot_time.min(), plot_time.max())
@@ -930,19 +1341,20 @@ class SimulationPair:
             # ax.text(0.025, 0.9, 'With OG', transform=ax.transAxes)
             ax.xaxis.set_ticklabels([])
         for ax in axes[1, :]:
-            ax.set_xlabel(r'$t/t_\mathrm{dyn} \times 10^4$')
+            ax.set_xlabel(r'$t/t_\mathrm{dyn}$')
+            # ax.set_xlabel(r'$t/t_\mathrm{dyn} \times 10^4$')
             # ax.text(0.025, 0.9, 'Without OG', transform=ax.transAxes)
         # for ax in axes[:, 0]:
         #     ylim = max_max_inc + 2.0
         #     ax.set_ylim(-ylim, ylim)
         ymax = print_cmax(False)[self.stip_mult-1]
-        for ax in axes[:, 1]:
-            ax.set_ylim(0.0, ymax+0.1)
-        axes[0, 1].text(0.575, 0.9,
+        for ax in axes[1, :]:
+            ax.set_ylim(-0.02, ymax+0.15)
+        axes[1, 0].text(0.575, 0.9,
                         r'$\langle \tilde{\mathcal{C}} \rangle_2 =$' +
                         ' {avg:.6f}'.format(avg=self.mean_gc_with),
                         bbox=dict(facecolor='w', edgecolor='k'),
-                        transform=axes[0, 1].transAxes)
+                        transform=axes[1, 0].transAxes)
         axes[1, 1].text(0.575, 0.9,
                         r'$\langle \tilde{\mathcal{C}} \rangle_1 =$' +
                         ' {avg:.6f}'.format(avg=self.mean_gc_wout),
@@ -952,7 +1364,60 @@ class SimulationPair:
         if save:
             fig.savefig('new-plot.pdf')
         return
-        
+    
+    def plot_nbody_and_secular(self, legend=False, save=False):
+        """
+        Plots the N-body and Laplace--Lagrange solutions for the inclination
+        evolution in the system, to evaluate the accuracy of the latter.
+
+        Parameters
+        ----------
+        legend : bool
+            Make legend in the first subplot?
+        save : bool
+            Save the figure as a PDF?
+        """
+        nbody_time, nbody_inclinations = None, None
+
+        # Plot params
+        mpl.rcParams['text.usetex'] = True
+        mpl.rcParams['font.family'] = 'cmu-serif'
+        mpl.rcParams['font.size'] = 10
+        palette = seaborn.color_palette('colorblind', self.with_og.N)
+        alpha = 1.0
+        lw = 2
+
+        # Run N-body simulation
+        try:
+            nbody_time, nbody_inclinations = self.nbody_with()
+        except rebound.Escape:
+            print('UNSTABLE: Ejected planet.')
+            return
+        except rebound.Encounter:
+            print('UNSTABLE: Close encounter or collision.')
+            return
+
+        # Plotting -- note this plot includes the OG for a full comparison of
+        # the dynamics
+        fig, axes = plt.subplots(2, 1, dpi=200, constrained_layout=True)
+        for ii, particle in enumerate(self.with_og.particles[1:]):
+            secular_inclination = self.sol_with['inc'][ii, :]
+            axes[0].plot(self.time, secular_inclination * to_degrees,
+                         c=palette[ii], alpha=alpha, lw=lw, label=str(ii+1))
+            axes[1].plot(nbody_time, nbody_inclinations[ii] * to_degrees,
+                         c=palette[ii], alpha=alpha, lw=lw)
+        for ax in axes:
+            ax.set_xlim(self.time.min(), self.time.max())
+            ax.set_ylabel(r'$I$ (deg)')
+        axes[0].set_title('Laplace--Lagrange solution')
+        axes[1].set_title(r'$N$-body solution')
+        axes[1].set_xlabel('Simulation time')
+        if legend:
+            axes[0].legend()
+        if save:
+            fig.savefig('nbody-secular-compare.pdf')
+        return
+
 
 def max_transiting_inclination(stellar_radius, sma):
     """
@@ -976,6 +1441,72 @@ def max_transiting_inclination(stellar_radius, sma):
     return max_inc_degrees
 
 
+def scaling_matrix(N):
+    """
+    Returns the scaling matrix, of which the semi-major axes are elements of an
+    eigenvector.
+
+    Parameters
+    ----------
+    N : int
+        The multiplicity of the system.
+    
+    Returns
+    -------
+    numpy.ndarray (float)
+        The scaling matrix.
+    """
+    matrix = np.empty((N, N))
+    for i in range(N):
+        for j in range(N):
+            if i == 0 or i == N - 1:
+                if j == i:
+                    matrix[i][j] = 1.0
+                else:
+                    matrix[i][j] = 0.0
+            else:
+                if i == j - 1 or i == j + 1:
+                    matrix[i][j] = 0.5
+                else:
+                    matrix[i][j] = 0.0
+    return matrix
+
+
+def get_semi_major_axes(N, a_inner, a_outer):
+    """
+    Calculates the set of semi-major axes in a STIP, given an innermost and
+    outermost semi-major axis, and following the orbital period ratio trend
+    identified by Weiss+2018.
+
+    Parameters
+    ----------
+    N : int
+        The STIP multiplicity.
+    a_inner : float
+        The semi-major axis (simulation units) of the innermost planet.
+    a_outer : float
+        The semi-major axis (simulation units) of the outermost planet.
+    
+    Returns
+    -------
+    numpy.ndarray (float)
+        The semi-major axis of every planet in the STIP.
+    """
+    smas = None
+    eig = np.linalg.eig(scaling_matrix(N))
+    eigvecs = eig.eigenvectors.T
+    for ii, vec in enumerate(eigvecs):
+        if eig.eigenvalues[ii] == 1.0 and np.all(vec[1:] < vec[:-1]):
+            smas = vec
+    if smas is None:
+        raise NewError('No solution for semi-major axes!')
+    # The final entry in the vector is always zero, so we can manipulate it
+    # to have the proportionalities we want.
+    scale = np.log(a_inner / a_outer) / smas[0]
+    smas = np.exp(smas * scale) * a_outer
+    return smas
+
+
 def make_system(stip_mult, inc_scale, rng_seed):
     """
     Initializes a REBOUND simulation containing the STIP.
@@ -995,23 +1526,24 @@ def make_system(stip_mult, inc_scale, rng_seed):
     rebound.Simulation
         An N-body simulation containing the primary and the STIP.
     """
-    sim = reb.Simulation()
+    sim = rebound.Simulation()
     rng = np.random.default_rng(rng_seed)
+    smas = get_semi_major_axes(stip_mult, 0.1, 0.5)
+    incs = [rng.rayleigh(inc_scale) * to_radians for _ in range(stip_mult)]
+    incs -= np.mean(incs) # Ensure I = 0 corresponds to the mean STIP angular momentum plane
     # Note that everything is in G = 1 units
-    P0 = 2.0 * np.pi
     sim.add(m=1.0)
     for ii in range(stip_mult):
         sim.add(
             m = 1.0e-5,
-            # P = 0.01 * P0 * 10.0 ** ii, # Initially zero gap complexity in the STIP
-            a = 0.1 * 10.0 ** (2./3. * (ii + 1)/stip_mult), # Initially zero gap complexity in the STIP
+            a = smas[ii],
             e = 0.0,
-            inc = rng.rayleigh(inc_scale) * to_radians, # sample inclinations from Fabrycky+ 2014 dist
+            inc = incs[ii], # sample inclinations from Fabrycky+ 2014 dist
             # inc = 0.25 * to_radians, # constant inclinations
             pomega = 0.0,
             Omega  = 0.0,
         )
-    sim.move_to_com()
+    sim.move_to_hel()
     return sim
 
 
@@ -1061,12 +1593,91 @@ def gap_complexity(periods):
         p_star = []
         for ii, period in enumerate(periods[:-1]):
             period_ratio = periods[ii+1] / period
-            p_star.append(np.log10(period_ratio) / np.log10(max_period_ratio))
+            p_star.append(np.log(period_ratio) / np.log(max_period_ratio))
         ngaps = len(p_star)
-        entropy = sum([p * np.log10(p) for p in p_star])
+        entropy = sum([p * np.log(p) for p in p_star])
         disequilibrium = sum([(p - 1.0/ngaps) ** 2 for p in p_star])
         complexity = -1.0/cmax[ngaps] * entropy * disequilibrium
         return complexity
+
+
+def mutual_hill_radius_particles(primary, planet1, planet2):
+    """
+    Mutual Hill radius of two adjacent planets, passed as rebound Particles.
+
+    Parameters
+    ----------
+    primary : rebound.Particle
+        The primary of the system.
+    planet1 : rebound.Particle
+        The inner planet of the pair.
+    planet2 : rebound.Particle
+        The outer planet of the pair.
+    
+    Returns
+    -------
+    float
+        The mutual Hill radius, in the same untis as the semi-major axes of
+        the planets.
+    """
+    return mutual_hill_radius(
+        primary.m, planet1.m, planet2.m, planet1.a, planet2.a
+    )
+
+
+def mutual_hill_radius(mprimary, m1, m2, a1, a2):
+    """
+    Mutual Hill radius of two adjacent planets, from masses and semi-major
+    axes.
+
+    Parameters
+    ----------
+    mprimary : float
+        The mass of the primary.
+    m1 : float
+        The mass of the inner planet.
+    m2 : float
+        The mass of the outer planet.
+    a1 : float
+        The semi-major axis of the inner planet.
+    a2 : float
+        The semi-major axis of the outer planet.
+    
+    Returns
+    -------
+    float
+        The mutual Hill radius, in the same untis as the semi-major axes of
+        the planets.
+    """
+    result = np.power((m1 + m2)/(3. * mprimary), 1./3.)
+    result *= 0.5 * (a1 + a2)
+    return result
+
+
+def critical_mass_ratio(m1, a1, a2, num_hill_radii):
+    """
+    Calculates the maximum mass for the outer planet for which an adjacent pair
+    of planets is "stable" (by our definition).
+
+    Parameters
+    ----------
+    m1 : float
+        The mass of the inner planet.
+    a1 : float
+        The semi-major axis of the inner planet.
+    a2 : float
+        The semi-major axis of the outer planet.
+    num_hill_radii : float
+        The minimum number of mutual Hill radii that must separate the two
+        planets' semi-major axes.
+    
+    Returns
+    -------
+    float
+        The maximum mass of the outer planet, in units of the primary mass.
+    """
+    result = 3.0 * (2.0 / num_hill_radii * (a2 - a1)/(a2 + a1)) ** 3 - m1
+    return result
 
 
 def minimum_difference(resonance_list, frequency_ratio):
