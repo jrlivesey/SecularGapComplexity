@@ -11,6 +11,7 @@ import astropy.constants as const
 import pandas as pd
 import itertools
 import pickle
+from scipy.special import lambertw
 # from copy import deepcopy
 # from ctypes import cdll, c_double
 
@@ -24,6 +25,9 @@ import celmech
 from celmech.secular import LaplaceLagrangeSystem
 from celmech.nbody_simulation_utilities \
 import reb_orbits, get_simarchive_integration_results
+
+import warnings
+warnings.filterwarnings('ignore', category=np.exceptions.ComplexWarning)
 
 
 to_radians = np.pi/180.0
@@ -240,7 +244,7 @@ class EnsemblePair:
             return delta_a
 
     def sample(self, method='random', mass_min=1.0e-3, mass_max=0.5,
-               sma_min=0.75, sma_max=10.0):
+               sma_min=0.75, sma_max=10.0, ascale='linear'):
         """
         Generates a sample of hypothetical systems, either randomly or from a
         grid.
@@ -259,6 +263,7 @@ class EnsemblePair:
             Maximum semi-major axis for the companion.
         """
         self.method = method
+        self.ascale = ascale
         if method == 'random':
             try:
                 foo = self.og_mass_dist
@@ -302,7 +307,17 @@ class EnsemblePair:
             # self.mass_array = np.linspace(mass_min, mass_max, side_len)
             self.mass_array = np.logspace(np.log10(mass_min),
                                           np.log10(mass_max), side_len)
-            self.sma_array  = np.linspace(sma_min, sma_max, side_len)
+            if ascale == 'linear':
+                self.sma_array = np.linspace(sma_min, sma_max, side_len)
+            elif ascale == 'log':
+                self.sma_array = np.logspace(np.log10(sma_min),
+                                             np.log10(sma_max), side_len)
+            elif ascale == 'powertower':
+                arr = np.linspace(unspindle(sma_min), unspindle(sma_max),
+                                  side_len)
+                self.sma_array = arr ** arr
+            else:
+                raise NewError('ERROR: Unrecognized option for `ascale`.') 
             dseed = 0
             for i in range(side_len):
                 for j in range(side_len):
@@ -327,6 +342,7 @@ class EnsemblePair:
             self.sample()
         self.gc_with = np.empty(self.pairs.shape)
         self.gc_wout = np.empty(self.pairs.shape)
+        self.hill_stable = np.empty(self.pairs.shape)
         self.amd_metric = np.empty(self.pairs.shape)
         if self.method == 'random':
             for sim_pair in self.pairs:
@@ -349,6 +365,8 @@ class EnsemblePair:
                 self.pairs[i][j].get_gap_complexities()
                 self.gc_with[i][j] = self.pairs[i][j].mean_gc_with
                 self.gc_wout[i][j] = self.pairs[i][j].mean_gc_wout
+                self.hill_stable[i][j] = \
+                    self.within_stability_limit(self.pairs[i][j])
                 self.amd_metric[i][j] = self.pairs[i][j].amd_metric()
                 if not self.save_simulation_pairs:
                     if i != 0 or j != 0:
@@ -384,37 +402,63 @@ class EnsemblePair:
                 )
         return
     
-    def _mask_nonsecular(self, num_hill_radii=2.0*np.sqrt(3.0)):
+    def within_stability_limit(self, sim_pair,
+                               num_hill_radii=2.0*np.sqrt(3.0)):
         """
-        Mask out the region of parameter space in which the OG is within so
-        many mutual Hill radii of the outermost STIP planet.
+        Does the configuration including the OG satisfy a user-specified
+        stability criterion? This criterion is provided in terms of the
+        minimum number of mutual Hill radii that must separate the closest pair
+        of adjacent planets.
 
-        Parameters
-        ----------
-        num_hill_radii : float
-            The OG must be at least this many mutual Hill radii away to accept
-            the secular solution.
-        
         Returns
         -------
-        numpy.ndarray (bool)
-            The mask.
+        bool
+            Does the system satisfy this condition?
         """
-        mask = np.zeros(self.pairs.shape, dtype=bool)
-        for i, j in itertools.product(
-            range(int(np.sqrt(self.num_simulations))),
-            range(int(np.sqrt(self.num_simulations)))
-        ):
-            sim = self.pairs[i][j].with_og
-            separation = sim.particles[-1].a - sim.particles[-2].a
-            mhr = mutual_hill_radius_particles(
-                sim.particles[0], sim.particles[-2], sim.particles[-1]
-            )
-            if separation < num_hill_radii * mhr:
-                mask[i][j] = True
-            else:
-                pass
-        return mask
+        sim = sim_pair.with_og
+        separation = sim.particles[-1].a - sim.particles[-2].a
+        mhr = mutual_hill_radius_particles(
+            sim.particles[0], sim.particles[-2], sim.particles[-1]
+        )
+        if separation < num_hill_radii * mhr:
+            return True
+        else:
+            return False
+    
+    def _mask_nonsecular(self):
+        return self.hill_stable
+    
+    # def _mask_nonsecular(self, num_hill_radii=2.0*np.sqrt(3.0)):
+    #     """
+    #     Mask out the region of parameter space in which the OG is within so
+    #     many mutual Hill radii of the outermost STIP planet.
+
+    #     Parameters
+    #     ----------
+    #     num_hill_radii : float
+    #         The OG must be at least this many mutual Hill radii away to accept
+    #         the secular solution.
+        
+    #     Returns
+    #     -------
+    #     numpy.ndarray (bool)
+    #         The mask.
+    #     """
+    #     mask = np.zeros(self.pairs.shape, dtype=bool)
+    #     for i, j in itertools.product(
+    #         range(int(np.sqrt(self.num_simulations))),
+    #         range(int(np.sqrt(self.num_simulations)))
+    #     ):
+    #         sim = self.pairs[i][j].with_og
+    #         separation = sim.particles[-1].a - sim.particles[-2].a
+    #         mhr = mutual_hill_radius_particles(
+    #             sim.particles[0], sim.particles[-2], sim.particles[-1]
+    #         )
+    #         if separation < num_hill_radii * mhr:
+    #             mask[i][j] = True
+    #         else:
+    #             pass
+    #     return mask
     
     def _draw_stability_boundary(self, ax, num_hill_radii=2.0*np.sqrt(3.0)):
         """
@@ -484,7 +528,7 @@ class EnsemblePair:
         return
 
     def heatmaps(self, save=False, mask=False, draw_boundary=False,
-                 output=False):
+                 cmap=mpl.cm.Spectral, output=False):
         """
         Generates a heatmap in the change in gap complexity induced by the
         companion.
@@ -505,8 +549,6 @@ class EnsemblePair:
         tuple (matplotlib.figure.Figure, matplotlib.axes.Axes) or None
             The generated heatmaps.
         """
-        cmap = mpl.cm.Spectral
-        # cmap = mpl.cm.bwr
         if self.method != 'grid':
             raise NewError('Heatmaps can be made only for data sampled over a \
                             grid.')
@@ -516,12 +558,12 @@ class EnsemblePair:
             pass
         # fig, axes = plt.subplots(1, 3, figsize=(12, 4), dpi=200, sharex=True)
         fig, ax = plt.subplots(1, 1, dpi=200)
-        self.alpha_array = self.sma_array / self.wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
+        self.alpha_array = self.sma_array / self.pairs.ravel()[0].wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
         self.gc_err = self.gc_with - self.gc_wout
-        print(self.gc_err)
-        print(self.gc_err.min(), self.gc_err.max(), np.std(self.gc_err.ravel()))
+        print(np.nanmin(self.gc_err), np.nanmax(self.gc_err), np.nanmean(self.gc_err.ravel()), np.nanstd(self.gc_err.ravel()))
+        print('Average change in gap complexity metric: {}\n'.format(np.nanmean(self.gc_err.ravel())))
         if self.vlim is None:
-            self.vlim = np.abs(max([self.gc_err.min(), self.gc_err.max()]))
+            self.vlim = np.abs(max([np.nanmin(self.gc_err), np.nanmax(self.gc_err)]))
         else:
             pass
         if mask:
@@ -546,6 +588,11 @@ class EnsemblePair:
             # ax=axes[2],
             ax=ax,
         )
+        if self.ascale == 'log':
+            ax.set_xscale('log')
+        elif self.ascale == 'powertower':
+            ax.set_xscale('function',
+                          functions=(lambda x: x**x, lambda x: unspindle(x)))
         ax.set_yscale('log')
         # for ax in axes:
         #     ax.set_xlabel('OG mass')
@@ -585,7 +632,7 @@ class EnsemblePair:
         self.get_proximity_to_resonance()
         cmap = mpl.cm.magma_r
         fig, ax = plt.subplots(1, 1, dpi=200)
-        self.alpha_array = self.sma_array / self.wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
+        self.alpha_array = self.sma_array / self.pairs.ravel()[0].wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
         if self.vlim is None:
             # self.vlim = max(np.abs([self.proximity_to_resonance.min(),
             #                         self.proximity_to_resonance.max()]))
@@ -1100,7 +1147,7 @@ class SimulationPair:
         float
             The value of this quantity.
         """
-        # return self.total_amd()[0] # Just the total AMD of the STIP
+        return self.total_amd()[0] # Just the total AMD of the STIP
 
         # # AMD, weighted toward higher semi-major axis
         # per_planet = np.empty((self.stip_mult,))
@@ -1125,7 +1172,7 @@ class SimulationPair:
         # return self.with_og.particles[-2].inc * to_degrees
 
         # The variance in the STIP inclinations
-        return np.var([p.inc for p in self.wout_og.particles[1:]]) * to_degrees
+        # return np.var([p.inc for p in self.wout_og.particles[1:]]) * to_degrees
     
     def get_gap_complexity(self, simulation, solution):
         """
@@ -1184,10 +1231,16 @@ class SimulationPair:
             self.mean_gc_with = np.nanmean(self.gc_with)
             self.mean_gc_wout = np.nanmean(self.gc_wout)
         except RuntimeWarning as warning:
-            print()
-            print(i, j)
-            print(warning)
-            print()
+            # print()
+            # print(i, j)
+            # print(warning)
+            # print()
+            pass
+        # Replace NaNs with zeros to make plots without holes
+        if np.isnan(self.mean_gc_with):
+            self.mean_gc_with = 0.
+        if np.isnan(self.mean_gc_wout):
+            self.mean_gc_wout = 0.
         return self.gc_with, self.gc_wout
 
     def _get_nan_limits(self, time_series, time=None):
@@ -1219,14 +1272,18 @@ class SimulationPair:
         nan_times = []
         for i, idx in enumerate(nan_idx):
             try:
-                if nan_idx[i-1] != idx - 1:
+                if i == 0:
                     start_idx.append(idx)
-                if nan_idx[i+1] != idx + 1:
+                elif i == len(nan_idx) - 1:
                     end_idx.append(idx)
-            except IndexError as e:
-                print(e)
-                print(len(time_series))
-                print(idx)
+                else:
+                    if nan_idx[i-1] != idx - 1:
+                        start_idx.append(idx)
+                    if nan_idx[i+1] != idx + 1:
+                        end_idx.append(idx)
+            except IndexError as err:
+                print(nan_idx.shape)
+                print(err)
                 pass
         idx_pairs = zip(start_idx, end_idx)
         for pair in idx_pairs:
@@ -1304,29 +1361,30 @@ class SimulationPair:
             evol_with = self.sol_with[orb_elem][ii, :]
             evol_wout = self.sol_wout[orb_elem][ii, :]
             axes[0, 0].plot(plot_time,
-                            evol_with * to_degrees, c=palette[ii],
-                            alpha=alpha, lw=lw, label=str(ii+1))
-            axes[0, 1].plot(plot_time,
                             evol_wout * to_degrees, c=palette[ii],
                             alpha=alpha, lw=lw)
+            axes[0, 1].plot(plot_time,
+                            evol_with * to_degrees, c=palette[ii],
+                            alpha=alpha, lw=lw, label=str(ii+1))
             if orb_elem == 'inc':
                 for ax in axes[0, :]:
                     ax.axhline(+max_inc, c=palette[ii], ls='dotted')
                     ax.axhline(-max_inc, c=palette[ii], ls='dotted')
             # if max_inc > max_max_inc:
             #     max_max_inc = max_inc
-        # axes[0, 1].plot(plot_time, self.gc_with, lw=lw)
-        # axes[1, 1].plot(plot_time, self.gc_wout, lw=lw)
-        self._draw_discontinuous_curve(
-            axes[1, 0], plot_time, self.gc_with, 'k', lw
-        )
-        self._draw_discontinuous_curve(
-            axes[1, 1], plot_time, self.gc_wout, 'k', lw
-        )
-        for pair in nan_times_with:
+        axes[1, 0].scatter(plot_time, self.gc_wout, c='k', s=0.25)
+        axes[1, 1].scatter(plot_time, self.gc_with, c='k', s=0.25)
+        # self._draw_discontinuous_curve(
+        #     axes[1, 0], plot_time, self.gc_with, 'k', lw
+        # )
+        # self._draw_discontinuous_curve(
+        #     axes[1, 1], plot_time, self.gc_wout, 'k', lw
+        # )
+        # [print(gc) for gc in self.gc_with]
+        for pair in nan_times_wout:
             _min, _max = (float(lim) for lim in pair)
             axes[1, 0].axvspan(_min, _max, color='silver')
-        for pair in nan_times_wout:
+        for pair in nan_times_with:
             _min, _max = (float(lim) for lim in pair)
             axes[1, 1].axvspan(_min, _max, color='silver')
         # for ax in axes[:, 1]:
@@ -1350,14 +1408,14 @@ class SimulationPair:
         ymax = print_cmax(False)[self.stip_mult-1]
         for ax in axes[1, :]:
             ax.set_ylim(-0.02, ymax+0.15)
-        axes[1, 0].text(0.575, 0.9,
-                        r'$\langle \tilde{\mathcal{C}} \rangle_2 =$' +
-                        ' {avg:.6f}'.format(avg=self.mean_gc_with),
-                        bbox=dict(facecolor='w', edgecolor='k'),
-                        transform=axes[1, 0].transAxes)
-        axes[1, 1].text(0.575, 0.9,
+        axes[1, 0].text(0.56, 0.885,
                         r'$\langle \tilde{\mathcal{C}} \rangle_1 =$' +
                         ' {avg:.6f}'.format(avg=self.mean_gc_wout),
+                        bbox=dict(facecolor='w', edgecolor='k'),
+                        transform=axes[1, 0].transAxes)
+        axes[1, 1].text(0.56, 0.885,
+                        r'$\langle \tilde{\mathcal{C}} \rangle_2 =$' +
+                        ' {avg:.6f}'.format(avg=self.mean_gc_with),
                         bbox=dict(facecolor='w', edgecolor='k'),
                         transform=axes[1, 1].transAxes)
         # fig.tight_layout()
@@ -1417,6 +1475,15 @@ class SimulationPair:
         if save:
             fig.savefig('nbody-secular-compare.pdf')
         return
+
+
+def unspindle(y):
+    """
+    Given a real number y, calculates the argument x of y = x^x.
+    """
+    x = np.exp(lambertw(np.log(y)))
+    x = np.asfarray(x)
+    return x
 
 
 def max_transiting_inclination(stellar_radius, sma):
