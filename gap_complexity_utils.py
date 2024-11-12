@@ -157,11 +157,12 @@ class EnsemblePair:
         self.og_mult   = og_mult
         self.inc_scale = inc_scale
         self.og_inc    = og_inc
+        self.rng_seed  = None
         if rng_seed is not None:
             self.rng_seed = rng_seed
-            self.rng = np.random.default_rng(rng_seed)
         else:
-            pass
+            self.rng_seed = np.random.randint(1, 1e10)
+        self.rng = np.random.default_rng(rng_seed)
         self.vlim = vlim
         self.save_simulation_pairs = save_simulation_pairs
         self.randomize_inclinations = randomize_inclinations
@@ -505,7 +506,7 @@ class EnsemblePair:
         elif self.method == 'grid':
             gc_with = self.gc_with.ravel()
             gc_wout = self.gc_wout.ravel()
-        fig, axes = plt.subplots(2, 1, dpi=200)
+        fig, axes = plt.subplots(2, 1, figsize=(8, 6), dpi=200)
         cmax = print_cmax(tabular=False)[self.stip_mult-1]
         axes[0].hist(gc_with, bins=[k * cmax/10 for k in range(10)],
                      weights=np.ones_like(gc_with)/self.num_simulations)
@@ -517,7 +518,7 @@ class EnsemblePair:
         #              range=(0.0, cmax))
         for ax in axes:
             ax.set_xlabel(r'$\langle \tilde{\mathcal{C}} \rangle$')
-            ax.set_ylabel('Fraction of simulations')
+            ax.set_ylabel('Fraction')
         axes[0].set_title('With OG')
         axes[1].set_title('Without OG')
         fig.tight_layout()
