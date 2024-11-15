@@ -561,7 +561,6 @@ class EnsemblePair:
         fig, ax = plt.subplots(1, 1, dpi=200)
         self.alpha_array = self.sma_array / self.pairs.ravel()[0].wout_og.particles[-1].a # ratio between OG sma and that of outermost TIP
         self.gc_err = self.gc_with - self.gc_wout
-        print(np.nanmin(self.gc_err), np.nanmax(self.gc_err), np.nanmean(self.gc_err.ravel()), np.nanstd(self.gc_err.ravel()))
         print('Average change in gap complexity metric: {}\n'.format(np.nanmean(self.gc_err.ravel())))
         if self.vlim is None:
             self.vlim = np.abs(max([np.nanmin(self.gc_err), np.nanmax(self.gc_err)]))
@@ -569,6 +568,7 @@ class EnsemblePair:
             pass
         if mask:
             self.gc_err = np.ma.array(self.gc_err, mask=self._mask_nonsecular())
+        print(np.nanmin(self.gc_err), np.nanmax(self.gc_err), np.nanmean(self.gc_err.ravel()), np.nanstd(self.gc_err.ravel()))
         # axes[0].contourf(self.mass_array, self.sma_array, self.gc_with, cmap=cmap)
         # axes[1].contourf(self.mass_array, self.sma_array, self.gc_wout, cmap=cmap)
         # axes[2].contourf(self.mass_array, self.sma_array, gc_err, cmap=cmap)
@@ -1148,7 +1148,8 @@ class SimulationPair:
         float
             The value of this quantity.
         """
-        return self.total_amd()[0] # Just the total AMD of the STIP
+        # return self.total_amd()[0] # Just the total AMD of the STIP
+        return self.total_amd()[1] # Just the total AMD
 
         # # AMD, weighted toward higher semi-major axis
         # per_planet = np.empty((self.stip_mult,))
