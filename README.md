@@ -8,8 +8,8 @@ This is the repository for the paper "Gap Complexity of a Tightly Packed Planeta
 
 **Figure 5:** In the terminal, run the following.
 ```
-% python makeplots.py 2500
+% python makeplots.py 2500 4 10
 ```
-This will generate an individual PDF for each subplot from our Fig. 5. Increase or decrease the sample size by using a perfect square other than 2500.
+This will generate the first subplot from our Fig. 5. Change the STIP multiplicity by entering a number other than 4, and change the inclination (in degrees) of the OG by selecting a number other than 10. Increase or decrease the sample size by using a perfect square other than 2500.
 
 The notebook `time-dependence.ipynb` contains some plots justifying the choice of time span for computing gap complexities in the paper. The notebook `nbody-comparison.ipynb` contains some comparisons between $N$-body simulations and the secular models we run.
