@@ -1,6 +1,6 @@
 # SecularGapComplexity
 
-This is the repository for the paper "Gap Complexity of a Tightly Packed Planetary System Perturbed by an Exterior Giant Companion" (Livesey & Becker, *submitted*). Welcome! Below are instructions for re-producing the figures from the paper.
+This is the repository for the paper "Gap Complexity of a Tightly Packed Planetary System Perturbed by an Exterior Giant Companion" (Livesey & Becker, 2025, *ApJ*, 979, 202). Welcome! Below are instructions for re-producing the figures from the paper.
 
 **Figure 1:** Run the cells in the notebook `simulation-pairs.ipynb`. This notebook also includes some extra information on the gap complexity metric and our model.
 
